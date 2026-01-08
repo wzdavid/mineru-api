@@ -1,0 +1,40 @@
+FROM python:3.12-slim
+
+ARG PIP_INDEX_URL=https://pypi.org/simple
+
+RUN echo "Types: deb\nURIs: http://mirrors.aliyun.com/debian/\nSuites: bookworm bookworm-updates\nComponents: main\n\nTypes: deb\nURIs: http://mirrors.aliyun.com/debian-security/\nSuites: bookworm-security\nComponents: main" > /etc/apt/sources.list.d/debian.sources
+
+ENV PYTHONUNBUFFERED=1 \
+    PIP_NO_CACHE_DIR=1 \
+    PIP_DEFAULT_TIMEOUT=120 \
+    MINERU_DEVICE_MODE=cpu \
+    PYTHONPATH=/app
+
+WORKDIR /app
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    curl \
+    libgl1 \
+    libglib2.0-0 \
+    procps \
+    && rm -rf /var/lib/apt/lists/* && apt-get clean
+
+COPY worker/requirements.txt /app/worker/requirements.txt
+RUN pip install --upgrade pip setuptools wheel -i ${PIP_INDEX_URL} && \
+    pip install --no-cache-dir -r /app/worker/requirements.txt -i ${PIP_INDEX_URL} --break-system-packages
+
+# Pre-download MinerU models (use modelscope for download, do not set MINERU_MODEL_SOURCE=local)
+RUN unset MINERU_MODEL_SOURCE && mineru-models-download -s modelscope -m all || echo 'Model download failed, will download on first use'
+
+# After download completes, set runtime to use local models
+ENV MINERU_MODEL_SOURCE=local
+
+COPY shared /app/shared
+COPY worker /app/worker
+
+RUN mkdir -p /tmp/mineru_temp /tmp/mineru_output
+
+HEALTHCHECK --interval=30s --timeout=10s --start-period=20s \
+    CMD python -c "import os, redis; r = redis.from_url(os.environ.get('REDIS_URL', 'redis://localhost:6379/')); r.ping()" || exit 1
+
+CMD ["python", "worker/tasks.py"]

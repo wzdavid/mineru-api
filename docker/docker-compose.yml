@@ -1,0 +1,168 @@
+services:
+  # Redis service (optional, use profile to enable)
+  # To use external Redis, set REDIS_URL in .env file and don't use redis profile
+  redis:
+    profiles: ["redis"]
+    image: redis:7-alpine
+    container_name: mineru-redis
+    restart: always
+    ports:
+      - "${REDIS_PORT:-6379}:6379"
+    volumes:
+      - redis_data:/data
+    networks:
+      - mineru-network
+    command: redis-server --appendonly yes
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  mineru-api:
+    image: mineru-api:latest
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.api
+      args:
+        PIP_INDEX_URL: ${PIP_INDEX_URL:-https://pypi.org/simple}
+    container_name: mineru-api
+    restart: always
+    depends_on:
+      redis:
+        condition: service_healthy
+        required: false
+    env_file:
+      - ../.env
+    ports:
+      - "${MINERU_API_PORT:-8000}:8000"
+    environment:
+      # Redis URL: Read from docker/.env file (or docker/.env.example)
+      # If using internal Redis service: redis://redis:6379/0
+      # If using external Redis on host: redis://host.docker.internal:6379/0
+      # If using external Redis with IP: redis://192.168.1.100:6379/0
+      # If using external Redis with password: redis://:password@host.docker.internal:6379/0
+      - REDIS_URL=${REDIS_URL:-redis://redis:6379/0}
+      - PIP_INDEX_URL=${PIP_INDEX_URL:-https://pypi.org/simple}
+    volumes:
+      # Note: When using S3 storage (MINERU_STORAGE_TYPE=s3), the following volumes will not be used
+      # but kept for backward compatibility
+      - mineru_output:/tmp/mineru_output
+      - mineru_temp:/tmp/mineru_temp
+      - ../api:/app/api
+      - ../shared:/app/shared
+    networks:
+      - mineru-network
+
+  mineru-worker-gpu:
+    profiles: ["mineru-gpu"]
+    image: mineru-worker:latest
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.worker
+      args:
+        PIP_INDEX_URL: ${PIP_INDEX_URL:-https://pypi.org/simple}
+    container_name: mineru-worker-gpu
+    restart: always
+    depends_on:
+      redis:
+        condition: service_healthy
+        required: false
+    env_file:
+      - ../.env
+    environment:
+      # Redis URL: Read from docker/.env file (or docker/.env.example)
+      # If using internal Redis service: redis://redis:6379/0
+      # If using external Redis on host: redis://host.docker.internal:6379/0
+      # If using external Redis with IP: redis://192.168.1.100:6379/0
+      # If using external Redis with password: redis://:password@host.docker.internal:6379/0
+      - REDIS_URL=${REDIS_URL:-redis://redis:6379/0}
+      - PIP_INDEX_URL=${PIP_INDEX_URL:-https://pypi.org/simple}
+    volumes:
+      # Note: When using S3 storage (MINERU_STORAGE_TYPE=s3), the following volumes will not be used
+      # but kept for backward compatibility
+      - mineru_output:/tmp/mineru_output
+      - mineru_temp:/tmp/mineru_temp
+      - ../worker:/app/worker
+      - ../shared:/app/shared
+    networks:
+      - mineru-network
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+
+  mineru-worker-cpu:
+    profiles: ["mineru-cpu"]
+    image: mineru-worker-cpu:latest
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.worker.cpu
+      args:
+        PIP_INDEX_URL: ${PIP_INDEX_URL:-https://pypi.org/simple}
+    container_name: mineru-worker-cpu
+    restart: always
+    depends_on:
+      redis:
+        condition: service_healthy
+        required: false
+    env_file:
+      - ../.env
+    environment:
+      # Redis URL: Read from docker/.env file (or docker/.env.example)
+      # If using internal Redis service: redis://redis:6379/0
+      # If using external Redis on host: redis://host.docker.internal:6379/0
+      # If using external Redis with IP: redis://192.168.1.100:6379/0
+      # If using external Redis with password: redis://:password@host.docker.internal:6379/0
+      - REDIS_URL=${REDIS_URL:-redis://redis:6379/0}
+      - PIP_INDEX_URL=${PIP_INDEX_URL:-https://pypi.org/simple}
+    volumes:
+      # Note: When using S3 storage (MINERU_STORAGE_TYPE=s3), the following volumes will not be used
+      # but kept for backward compatibility
+      - mineru_output:/tmp/mineru_output
+      - mineru_temp:/tmp/mineru_temp
+      - ../worker:/app/worker
+      - ../shared:/app/shared
+    networks:
+      - mineru-network
+
+  mineru-cleanup:
+    profiles: ["mineru-cleanup"]
+    image: mineru-cleanup:latest
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.cleanup
+      args:
+        PIP_INDEX_URL: ${PIP_INDEX_URL:-https://pypi.org/simple}
+    container_name: mineru-cleanup
+    restart: always
+    env_file:
+      - ../.env
+    environment:
+      - PIP_INDEX_URL=${PIP_INDEX_URL:-https://pypi.org/simple}
+      # Cleanup scheduler configuration
+      - CLEANUP_INTERVAL_HOURS=${CLEANUP_INTERVAL_HOURS:-24}
+      - CLEANUP_EXTRA_HOURS=${CLEANUP_EXTRA_HOURS:-2}
+    volumes:
+      # Note: When using S3 storage (MINERU_STORAGE_TYPE=s3), the following volumes will not be used
+      # but kept for backward compatibility
+      # In S3 storage mode, cleanup service will automatically detect and only clean output files (temporary files handled by S3 lifecycle policy)
+      - mineru_output:/tmp/mineru_output
+      - mineru_temp:/tmp/mineru_temp
+      - ../cleanup:/app/cleanup
+      - ../shared:/app/shared
+    networks:
+      - mineru-network
+    command: python cleanup/cleanup_scheduler.py --interval ${CLEANUP_INTERVAL_HOURS:-24} --extra-hours ${CLEANUP_EXTRA_HOURS:-2}
+
+volumes:
+  mineru_output:
+  mineru_temp:
+  redis_data:
+
+networks:
+  mineru-network:
+    driver: bridge

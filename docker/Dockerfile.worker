@@ -1,0 +1,16 @@
+FROM mineru-vllm:latest
+
+ARG PIP_INDEX_URL=https://pypi.org/simple
+
+WORKDIR /app
+
+COPY worker/requirements.txt /app/worker/requirements.txt
+RUN python3 -m pip install --no-cache-dir -r /app/worker/requirements.txt -i ${PIP_INDEX_URL} --break-system-packages
+
+COPY shared /app/shared
+COPY worker /app/worker
+
+ENV PYTHONPATH=/app \
+    MINERU_MODEL_SOURCE=local
+
+CMD ["python3", "worker/tasks.py"]

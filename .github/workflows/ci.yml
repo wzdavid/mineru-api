@@ -49,7 +49,7 @@ jobs:
         uses: docker/build-push-action@v5
         with:
           context: .
-          file: ./Dockerfile.api
+          file: ./docker/Dockerfile.api
           push: false
           tags: mineru-api:test
           cache-from: type=gha
@@ -59,7 +59,7 @@ jobs:
         uses: docker/build-push-action@v5
         with:
           context: .
-          file: ./Dockerfile.worker.cpu
+          file: ./docker/Dockerfile.worker.cpu
           push: false
           tags: mineru-worker-cpu:test
           cache-from: type=gha

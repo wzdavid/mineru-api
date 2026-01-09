@@ -53,14 +53,22 @@ jobs:
           push: false
           tags: mineru-api:test
           cache-from: type=gha
-          cache-to: type=gha,mode=max
+          cache-to: type=gha,mode=min
       
-      - name: Build Worker CPU image
+      - name: Build Worker CPU image (skip model download for CI)
         uses: docker/build-push-action@v5
         with:
           context: .
           file: ./docker/Dockerfile.worker.cpu
           push: false
           tags: mineru-worker-cpu:test
+          build-args: |
+            SKIP_MODEL_DOWNLOAD=true
           cache-from: type=gha
-          cache-to: type=gha,mode=max
+          cache-to: type=gha,mode=min
+      
+      - name: Clean up Docker build cache
+        if: always()
+        run: |
+          # Clean up build cache to free space
+          docker builder prune -af || true

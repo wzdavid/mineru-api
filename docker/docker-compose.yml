@@ -103,6 +103,7 @@ services:
       dockerfile: docker/Dockerfile.worker.cpu
       args:
         PIP_INDEX_URL: ${PIP_INDEX_URL:-https://pypi.org/simple}
+        SKIP_MODEL_DOWNLOAD: ${SKIP_MODEL_DOWNLOAD:-false}
     container_name: mineru-worker-cpu
     restart: always
     depends_on:

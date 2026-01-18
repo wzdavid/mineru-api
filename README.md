@@ -1,8 +1,20 @@
+<div align="center">
+
 # MinerU Parsing Service
 
 [![CI](https://github.com/wzdavid/mineru-api/workflows/CI/badge.svg)](https://github.com/wzdavid/mineru-api/actions)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
+[![FastAPI](https://img.shields.io/badge/FastAPI-0.104+-green.svg)](https://fastapi.tiangolo.com)
+[![Celery](https://img.shields.io/badge/Celery-5.3+-green.svg)](https://docs.celeryq.dev)
+[![Docker](https://img.shields.io/badge/Docker-Ready-blue.svg)](https://www.docker.com)
+[![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/wzdavid/mineru-api)
+
+[English](README.md) | [简体中文](README.zh.md)
+
+**[📖 Deployment Guide](docs/DEPLOYMENT.md)** • **[⚙️ Configuration](docs/CONFIGURATION.md)** • **[💡 API Examples](docs/API_EXAMPLES.md)** • **[🔧 Troubleshooting](docs/TROUBLESHOOTING.md)**
+
+</div>
 
 Enterprise-grade document parsing service with asynchronous queue processing based on Celery, featuring a fully decoupled API/Worker architecture.
 

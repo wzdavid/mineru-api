@@ -1,8 +1,20 @@
+<div align="center">
+
 # MinerU Parsing Service
 
 [![CI](https://github.com/wzdavid/mineru-api/workflows/CI/badge.svg)](https://github.com/wzdavid/mineru-api/actions)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
+[![FastAPI](https://img.shields.io/badge/FastAPI-0.104+-green.svg)](https://fastapi.tiangolo.com)
+[![Celery](https://img.shields.io/badge/Celery-5.3+-green.svg)](https://docs.celeryq.dev)
+[![Docker](https://img.shields.io/badge/Docker-Ready-blue.svg)](https://www.docker.com)
+[![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/wzdavid/mineru-api)
+
+[English](README.md) | [简体中文](README.zh.md)
+
+**[📖 部署指南](docs/DEPLOYMENT.zh.md)** • **[⚙️ 配置参考](docs/CONFIGURATION.zh.md)** • **[💡 API 示例](docs/API_EXAMPLES.zh.md)** • **[🔧 故障排除](docs/TROUBLESHOOTING.zh.md)**
+
+</div>
 
 企业级文档解析服务，基于 Celery 实现异步队列处理，采用完全解耦的 API/Worker 架构。
 

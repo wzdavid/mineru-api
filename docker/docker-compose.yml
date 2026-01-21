@@ -57,6 +57,9 @@ services:
   mineru-worker-gpu:
     profiles: ["mineru-gpu"]
     image: mineru-worker:latest
+    # NOTE: This service depends on base image 'mineru-vllm:latest'
+    # Build the base image first using: docker build -f docker/Dockerfile.base -t mineru-vllm:latest ..
+    # Or use the build script: ./build.sh --worker-gpu
     build:
       context: ..
       dockerfile: docker/Dockerfile.worker

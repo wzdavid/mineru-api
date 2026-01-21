@@ -4,10 +4,161 @@
 
 ## 目录
 
+- [Docker 网络问题](#docker-网络问题)
 - [连接问题](#连接问题)
 - [任务执行问题](#任务执行问题)
 - [性能问题](#性能问题)
 - [存储问题](#存储问题)
+
+## Docker 构建问题
+
+### 构建 Worker 时找不到基础镜像
+
+**症状**: 构建 `mineru-worker-gpu` 时出错："failed to solve: failed to fetch ... mineru-vllm:latest"
+
+**原因**: `mineru-worker-gpu` 服务依赖于基础镜像 `mineru-vllm:latest`，必须先构建该基础镜像。
+
+**解决方案**:
+
+1. **使用构建脚本（推荐）**:
+   ```bash
+   cd docker && ./build.sh --worker-gpu
+   ```
+   脚本会自动检查并在需要时构建基础镜像。
+
+2. **手动先构建基础镜像**:
+   ```bash
+   cd docker
+   docker build -f Dockerfile.base \
+       --build-arg PIP_INDEX_URL=${PIP_INDEX_URL:-https://pypi.org/simple} \
+       -t mineru-vllm:latest ..
+   
+   # 然后构建 worker
+   docker compose build mineru-worker-gpu
+   ```
+
+3. **使用脚本构建所有镜像**:
+   ```bash
+   cd docker && ./build.sh
+   ```
+
+### 基础镜像构建失败
+
+**症状**: 构建 `mineru-vllm:latest` 基础镜像时出错
+
+**可能原因**:
+1. 下载模型时网络问题
+2. 磁盘空间不足
+3. Docker 构建上下文问题
+
+**解决方案**:
+1. 检查网络连接和 pip 镜像源配置
+2. 检查可用磁盘空间：`df -h`
+3. 确保从正确的目录运行构建命令：
+   ```bash
+   # 从 docker/ 目录
+   docker build -f Dockerfile.base -t mineru-vllm:latest ..
+   ```
+4. 检查构建日志以获取具体错误信息
+5. 如果有缓存问题，尝试使用 `--no-cache` 构建：
+   ```bash
+   docker build --no-cache -f docker/Dockerfile.base -t mineru-vllm:latest .
+   ```
+
+## Docker 网络问题
+
+### 容器网络设置失败
+
+**症状**: 启动服务时出现类似 "failed to set up container networking: network ... not found" 或类似的网络错误
+
+**可能原因**:
+1. 现有网络处于异常状态
+2. 容器名称冲突
+3. 之前运行未完全清理
+4. Docker 网络驱动问题
+
+**解决方案**:
+
+1. **清理现有容器和网络**:
+   ```bash
+   cd docker
+   # 停止并删除所有容器
+   docker compose down
+   
+   # 删除特定网络（如果存在）
+   docker network rm docker_mineru-network 2>/dev/null || true
+   docker network rm mineru-api_mineru-network 2>/dev/null || true
+   
+   # 删除任何孤立的容器
+   docker rm -f mineru-api mineru-redis mineru-worker-gpu mineru-worker-cpu 2>/dev/null || true
+   ```
+
+2. **检查网络冲突**:
+   ```bash
+   # 列出所有网络
+   docker network ls
+   
+   # 检查现有网络（如果找到）
+   docker network inspect docker_mineru-network
+   ```
+
+3. **清理所有 Docker 资源**（如果上述方法不起作用）:
+   ```bash
+   cd docker
+   docker compose down -v  # 同时删除卷
+   docker system prune -f  # 清理未使用的资源
+   ```
+
+4. **重启 Docker 守护进程**（如果在 Linux 上）:
+   ```bash
+   sudo systemctl restart docker
+   ```
+
+5. **重建并启动服务**:
+   ```bash
+   cd docker
+   # 仅启动 API + Redis：
+   docker compose --profile redis up -d --build redis mineru-api
+   
+   # 启动 API + Redis + GPU Worker：
+   docker compose --profile redis --profile mineru-gpu up -d --build redis mineru-api mineru-worker-gpu
+   
+   # 启动 API + Redis + CPU Worker：
+   docker compose --profile redis --profile mineru-cpu up -d --build redis mineru-api mineru-worker-cpu
+   ```
+
+6. **如果使用 profiles，确保使用正确的命令**:
+   ```bash
+   cd docker
+   # 仅启动 API + Redis：
+   docker compose --profile redis up -d redis mineru-api
+   
+   # 启动 API + Redis + GPU Worker：
+   docker compose --profile redis --profile mineru-gpu up -d redis mineru-api mineru-worker-gpu
+   
+   # 启动 API + Redis + CPU Worker：
+   docker compose --profile redis --profile mineru-cpu up -d redis mineru-api mineru-worker-cpu
+   ```
+
+### 网络名称冲突
+
+**症状**: 网络创建失败，提示 "network already exists" 错误
+
+**解决方案**:
+1. 删除冲突的网络:
+   ```bash
+   docker network rm docker_mineru-network
+   # 或如果使用不同的项目名称
+   docker network rm <项目名称>_mineru-network
+   ```
+
+2. 在 `docker-compose.yml` 中使用不同的网络名称:
+   ```yaml
+   networks:
+     mineru-network:
+       name: mineru-custom-network
+       driver: bridge
+   ```
 
 ## 连接问题
 

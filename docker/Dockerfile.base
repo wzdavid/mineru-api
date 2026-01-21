@@ -45,4 +45,10 @@ RUN /bin/bash -c "mineru-models-download -s modelscope -m all"
 ENTRYPOINT ["/bin/bash", "-c", "export MINERU_MODEL_SOURCE=local && exec \"$@\"", "--"]
 
 # Build command for this base image:
-# docker build -f Dockerfile.base -t mineru-vllm:latest .
+# docker build -f docker/Dockerfile.base -t mineru-vllm:latest .
+#
+# Or use the build script from docker/ directory:
+# cd docker && ./build.sh --worker-gpu
+#
+# This base image must be built before building mineru-worker-gpu,
+# as Dockerfile.worker depends on it: FROM mineru-vllm:latest

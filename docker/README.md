@@ -62,7 +62,23 @@ cd docker && docker compose --profile mineru-gpu up -d
 
 # Start only API (no worker)
 cd docker && docker compose up -d
+
+# Start API with internal Redis (IMPORTANT: must use --profile redis)
+cd docker && docker compose --profile redis up -d redis mineru-api
+
+# Start API, Redis, and GPU Worker together
+cd docker && docker compose --profile redis --profile mineru-gpu up -d redis mineru-api mineru-worker-gpu
+
+# Start API, Redis, and CPU Worker together
+cd docker && docker compose --profile redis --profile mineru-cpu up -d redis mineru-api mineru-worker-cpu
 ```
+
+**Important Notes**:
+- The `redis` service uses a profile, so you **must** use `--profile redis` when starting it
+- The `mineru-worker-gpu` service uses `--profile mineru-gpu`
+- The `mineru-worker-cpu` service uses `--profile mineru-cpu`
+- You can combine multiple profiles: `--profile redis --profile mineru-gpu`
+- If you see network errors, see the [Troubleshooting Network Issues](#troubleshooting-network-issues) section below
 
 ### View Logs and Stop Services
 
@@ -73,6 +89,60 @@ cd docker && docker compose logs -f
 # Stop services
 cd docker && docker compose down
 ```
+
+### Troubleshooting Network Issues
+
+If you encounter network setup errors (e.g., "failed to set up container networking"):
+
+**Step 1: Try simple restart first** (if containers were stopped cleanly):
+```bash
+cd docker
+docker compose down
+docker compose --profile redis up -d redis mineru-api
+```
+
+**Step 2: If simple restart fails, clean up manually**:
+```bash
+cd docker
+# Stop and remove containers
+docker compose down
+
+# Force remove any remaining containers
+docker rm -f mineru-api mineru-redis mineru-worker-gpu mineru-worker-cpu 2>/dev/null || true
+
+# Remove networks (may have different names depending on project directory)
+docker network rm docker_mineru-network 2>/dev/null || true
+docker network rm mineru-api_mineru-network 2>/dev/null || true
+docker network rm "$(basename "$(pwd)")_mineru-network" 2>/dev/null || true
+
+# Check for any remaining mineru networks
+docker network ls | grep mineru
+
+# Restart with correct profiles
+# For API + Redis only:
+docker compose --profile redis up -d redis mineru-api
+
+# For API + Redis + GPU Worker:
+docker compose --profile redis --profile mineru-gpu up -d redis mineru-api mineru-worker-gpu
+
+# For API + Redis + CPU Worker:
+docker compose --profile redis --profile mineru-cpu up -d redis mineru-api mineru-worker-cpu
+```
+
+**Step 3: Check service status**:
+```bash
+docker compose ps
+docker compose logs mineru-api
+docker compose logs redis
+```
+
+**When to use manual cleanup**:
+- Network exists but containers can't connect
+- Containers are in an abnormal state (Exited, Dead, etc.)
+- Simple `docker compose down` doesn't fully clean up
+- You see persistent network errors even with correct `--profile` flags
+
+For more troubleshooting information, see [TROUBLESHOOTING.md](../docs/TROUBLESHOOTING.md).
 
 ### Redis Configuration
 
@@ -155,13 +225,53 @@ REDIS_URL=redis://username:password@host.docker.internal:6379/0
 
 ## Building Images
 
+### Important: Build Order
+
+The `mineru-worker-gpu` service depends on the base image `mineru-vllm:latest`, which must be built first.
+
+**Option 1: Use the build script (Recommended)**
+
+The build script automatically checks and builds the base image if needed:
+
 ```bash
-# Build all images
+# Build all images (automatically builds base image first)
+cd docker && ./build.sh
+
+# Build specific services
+cd docker && ./build.sh --api
+cd docker && ./build.sh --worker-gpu
+cd docker && ./build.sh --worker-cpu
+cd docker && ./build.sh --cleanup
+
+# Build multiple services
+cd docker && ./build.sh --api --worker-gpu
+```
+
+**Option 2: Manual build**
+
+If you prefer to build manually:
+
+```bash
+# 1. First, build the base image
+cd docker
+docker build -f Dockerfile.base \
+    --build-arg PIP_INDEX_URL=${PIP_INDEX_URL:-https://pypi.org/simple} \
+    -t mineru-vllm:latest ..
+
+# 2. Then build other images
 cd docker && docker compose build
 
-# Build specific service
+# Or build specific services
 cd docker && docker compose build mineru-api
+cd docker && docker compose build mineru-worker-gpu  # Requires mineru-vllm:latest
 cd docker && docker compose build mineru-worker-cpu
+```
+
+**Option 3: Using docker compose (will fail if base image missing)**
+
+```bash
+# This will fail if mineru-vllm:latest doesn't exist
+cd docker && docker compose build mineru-worker-gpu
 ```
 
 ## Environment Variables

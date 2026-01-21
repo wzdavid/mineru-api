@@ -9,6 +9,156 @@ This document lists common issues and solutions.
 - [Performance Issues](#performance-issues)
 - [Storage Issues](#storage-issues)
 
+## Docker Build Issues
+
+### Base Image Not Found When Building Worker
+
+**Symptoms**: Error when building `mineru-worker-gpu`: "failed to solve: failed to fetch ... mineru-vllm:latest"
+
+**Cause**: The `mineru-worker-gpu` service depends on the base image `mineru-vllm:latest`, which must be built first.
+
+**Solutions**:
+
+1. **Use the build script (Recommended)**:
+   ```bash
+   cd docker && ./build.sh --worker-gpu
+   ```
+   The script automatically checks and builds the base image if needed.
+
+2. **Build base image manually first**:
+   ```bash
+   cd docker
+   docker build -f Dockerfile.base \
+       --build-arg PIP_INDEX_URL=${PIP_INDEX_URL:-https://pypi.org/simple} \
+       -t mineru-vllm:latest ..
+   
+   # Then build the worker
+   docker compose build mineru-worker-gpu
+   ```
+
+3. **Build all images using the script**:
+   ```bash
+   cd docker && ./build.sh
+   ```
+
+### Base Image Build Fails
+
+**Symptoms**: Error when building `mineru-vllm:latest` base image
+
+**Possible Causes**:
+1. Network issues downloading models
+2. Insufficient disk space
+3. Docker build context issues
+
+**Solutions**:
+1. Check network connection and pip mirror configuration
+2. Check available disk space: `df -h`
+3. Ensure you're running the build command from the correct directory:
+   ```bash
+   # From docker/ directory
+   docker build -f Dockerfile.base -t mineru-vllm:latest ..
+   ```
+4. Check build logs for specific error messages
+5. Try building with `--no-cache` if there are caching issues:
+   ```bash
+   docker build --no-cache -f docker/Dockerfile.base -t mineru-vllm:latest .
+   ```
+
+## Docker Network Issues
+
+### Container Networking Setup Failed
+
+**Symptoms**: Error message like "failed to set up container networking: network ... not found" or similar network errors when starting services
+
+**Possible Causes**:
+1. Existing network in abnormal state
+2. Container name conflicts
+3. Incomplete cleanup from previous runs
+4. Docker network driver issues
+
+**Solutions**:
+
+1. **Clean up existing containers and networks**:
+   ```bash
+   cd docker
+   # Stop and remove all containers
+   docker compose down
+   
+   # Remove the specific network if it exists
+   docker network rm docker_mineru-network 2>/dev/null || true
+   docker network rm mineru-api_mineru-network 2>/dev/null || true
+   
+   # Remove any orphaned containers
+   docker rm -f mineru-api mineru-redis mineru-worker-gpu mineru-worker-cpu 2>/dev/null || true
+   ```
+
+2. **Check for network conflicts**:
+   ```bash
+   # List all networks
+   docker network ls
+   
+   # Inspect existing network (if found)
+   docker network inspect docker_mineru-network
+   ```
+
+3. **Clean up all Docker resources** (if above doesn't work):
+   ```bash
+   cd docker
+   docker compose down -v  # Remove volumes too
+   docker system prune -f  # Clean up unused resources
+   ```
+
+4. **Restart Docker daemon** (if on Linux):
+   ```bash
+   sudo systemctl restart docker
+   ```
+
+5. **Rebuild and start services**:
+   ```bash
+   cd docker
+   # For API + Redis only:
+   docker compose --profile redis up -d --build redis mineru-api
+   
+   # For API + Redis + GPU Worker:
+   docker compose --profile redis --profile mineru-gpu up -d --build redis mineru-api mineru-worker-gpu
+   
+   # For API + Redis + CPU Worker:
+   docker compose --profile redis --profile mineru-cpu up -d --build redis mineru-api mineru-worker-cpu
+   ```
+
+6. **If using profiles, ensure correct command**:
+   ```bash
+   cd docker
+   # API + Redis only:
+   docker compose --profile redis up -d redis mineru-api
+   
+   # API + Redis + GPU Worker:
+   docker compose --profile redis --profile mineru-gpu up -d redis mineru-api mineru-worker-gpu
+   
+   # API + Redis + CPU Worker:
+   docker compose --profile redis --profile mineru-cpu up -d redis mineru-api mineru-worker-cpu
+   ```
+
+### Network Name Conflicts
+
+**Symptoms**: Network creation fails with "network already exists" error
+
+**Solutions**:
+1. Remove conflicting network:
+   ```bash
+   docker network rm docker_mineru-network
+   # Or if using different project name
+   docker network rm <project-name>_mineru-network
+   ```
+
+2. Use a different network name in `docker-compose.yml`:
+   ```yaml
+   networks:
+     mineru-network:
+       name: mineru-custom-network
+       driver: bridge
+   ```
+
 ## Connection Issues
 
 ### Redis Connection Failed

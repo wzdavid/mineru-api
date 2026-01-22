@@ -66,13 +66,13 @@ Enterprise-grade document parsing service with asynchronous queue processing bas
    ```bash
    cd docker
    # Simplest: run directly (automatically selects CPU or GPU Worker based on COMPOSE_PROFILES)
-   ./build.sh
+   sh build.sh
    
    # Or manually specify (build.sh supports parameters to build only needed services)
    # GPU Worker:
-   ./build.sh --api --worker-gpu
+   sh build.sh --api --worker-gpu
    # CPU Worker:
-   ./build.sh --api --worker-cpu
+   sh build.sh --api --worker-cpu
    ```
 
 4. **Start services**:
@@ -96,9 +96,9 @@ Enterprise-grade document parsing service with asynchronous queue processing bas
 That's it! The API is now running at `http://localhost:8000`.
 
 > 💡 **Tips**:
-> - After configuring `COMPOSE_PROFILES`, both `./build.sh` and `docker compose up -d` will automatically recognize it
-> - `./build.sh` without parameters automatically selects CPU or GPU Worker based on `COMPOSE_PROFILES`
-> - You can also use parameters to explicitly specify: `./build.sh --api --worker-gpu` or `./build.sh --api --worker-cpu`
+> - After configuring `COMPOSE_PROFILES`, both `sh build.sh` and `docker compose up -d` will automatically recognize it
+> - `sh build.sh` without parameters automatically selects CPU or GPU Worker based on `COMPOSE_PROFILES`
+> - You can also use parameters to explicitly specify: `sh build.sh --api --worker-gpu` or `sh build.sh --api --worker-cpu`
 > - See [docker/README.md](docker/README.md) for more configuration options
 
 ## API Usage

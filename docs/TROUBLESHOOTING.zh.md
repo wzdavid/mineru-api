@@ -22,7 +22,7 @@
 
 1. **使用构建脚本（推荐）**:
    ```bash
-   cd docker && ./build.sh --worker-gpu
+   cd docker && sh build.sh --worker-gpu
    ```
    脚本会自动检查并在需要时构建基础镜像。
 
@@ -39,7 +39,7 @@
 
 3. **使用脚本构建所有镜像**:
    ```bash
-   cd docker && ./build.sh
+   cd docker && sh build.sh
    ```
 
 ### 基础镜像构建失败

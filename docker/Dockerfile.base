@@ -48,7 +48,7 @@ ENTRYPOINT ["/bin/bash", "-c", "export MINERU_MODEL_SOURCE=local && exec \"$@\""
 # docker build -f docker/Dockerfile.base -t mineru-vllm:latest .
 #
 # Or use the build script from docker/ directory:
-# cd docker && ./build.sh --worker-gpu
+# cd docker && sh build.sh --worker-gpu
 #
 # This base image must be built before building mineru-worker-gpu,
 # as Dockerfile.worker depends on it: FROM mineru-vllm:latest

@@ -32,13 +32,13 @@ This directory contains all Docker-related configuration files.
    ```bash
    cd docker
    # Simplest: run directly (automatically selects CPU or GPU Worker based on COMPOSE_PROFILES)
-   ./build.sh
+   sh build.sh
    
    # Or manually specify (build.sh supports parameters)
    # GPU Worker:
-   ./build.sh --api --worker-gpu
+   sh build.sh --api --worker-gpu
    # CPU Worker:
-   ./build.sh --api --worker-cpu
+   sh build.sh --api --worker-cpu
    ```
 
 3. **Configure and start services**:
@@ -282,24 +282,24 @@ cd docker
 
 # ===== Simplest: Auto-select based on COMPOSE_PROFILES =====
 # If COMPOSE_PROFILES is configured in docker/.env, automatically selects the corresponding Worker
-./build.sh
+sh build.sh
 
 # ===== Manual specification (build.sh still supports parameters) =====
 # GPU Worker:
-./build.sh --api --worker-gpu
+sh build.sh --api --worker-gpu
 # CPU Worker:
-./build.sh --api --worker-cpu
+sh build.sh --api --worker-cpu
 
 # ===== Other Options =====
-./build.sh --all              # Build all images (ignores COMPOSE_PROFILES)
-./build.sh --api              # Build API only
-./build.sh --worker-cpu       # Build CPU Worker only
-./build.sh --worker-gpu       # Build GPU Worker only (auto-builds base image first)
-./build.sh --cleanup         # Build cleanup service only
+sh build.sh --all              # Build all images (ignores COMPOSE_PROFILES)
+sh build.sh --api              # Build API only
+sh build.sh --worker-cpu       # Build CPU Worker only
+sh build.sh --worker-gpu       # Build GPU Worker only (auto-builds base image first)
+sh build.sh --cleanup         # Build cleanup service only
 ```
 
 > 💡 **Tips**:
-> - Running `./build.sh` without parameters automatically reads `COMPOSE_PROFILES` from `docker/.env` and selects the corresponding Worker
+> - Running `sh build.sh` without parameters automatically reads `COMPOSE_PROFILES` from `docker/.env` and selects the corresponding Worker
 > - The build script automatically checks and builds the base image `mineru-vllm:latest` required for GPU Worker, no manual handling needed
 > - CPU and GPU Workers are mutually exclusive, choose one
 > - If `COMPOSE_PROFILES` is not set or `.env` file doesn't exist, builds all services

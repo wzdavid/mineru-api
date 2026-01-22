@@ -32,13 +32,13 @@
    ```bash
    cd docker
    # 最简单：直接运行（会根据 COMPOSE_PROFILES 自动选择构建 CPU 或 GPU Worker）
-   ./build.sh
+   sh build.sh
    
    # 或者手动指定（build.sh 支持参数方式）
    # GPU Worker:
-   ./build.sh --api --worker-gpu
+   sh build.sh --api --worker-gpu
    # CPU Worker:
-   ./build.sh --api --worker-cpu
+   sh build.sh --api --worker-cpu
    ```
 
 3. **配置并启动服务**：
@@ -282,24 +282,24 @@ cd docker
 
 # ===== 最简单：根据 COMPOSE_PROFILES 自动选择 =====
 # 如果 docker/.env 中配置了 COMPOSE_PROFILES，会自动选择构建对应的 Worker
-./build.sh
+sh build.sh
 
 # ===== 手动指定（build.sh 仍支持参数方式）=====
 # GPU Worker:
-./build.sh --api --worker-gpu
+sh build.sh --api --worker-gpu
 # CPU Worker:
-./build.sh --api --worker-cpu
+sh build.sh --api --worker-cpu
 
 # ===== 其他选项 =====
-./build.sh --all              # 构建所有镜像（忽略 COMPOSE_PROFILES）
-./build.sh --api              # 仅构建 API
-./build.sh --worker-cpu       # 仅构建 CPU Worker
-./build.sh --worker-gpu       # 仅构建 GPU Worker（会自动先构建基础镜像）
-./build.sh --cleanup          # 仅构建清理服务
+sh build.sh --all              # 构建所有镜像（忽略 COMPOSE_PROFILES）
+sh build.sh --api              # 仅构建 API
+sh build.sh --worker-cpu       # 仅构建 CPU Worker
+sh build.sh --worker-gpu       # 仅构建 GPU Worker（会自动先构建基础镜像）
+sh build.sh --cleanup          # 仅构建清理服务
 ```
 
 > 💡 **提示**：
-> - 不带参数运行 `./build.sh` 时，会自动读取 `docker/.env` 中的 `COMPOSE_PROFILES`，选择构建对应的 Worker
+> - 不带参数运行 `sh build.sh` 时，会自动读取 `docker/.env` 中的 `COMPOSE_PROFILES`，选择构建对应的 Worker
 > - 构建脚本会自动检查并构建 GPU Worker 所需的基础镜像 `mineru-vllm:latest`，无需手动处理
 > - CPU 和 GPU Worker 是互斥的，选择一种即可
 > - 如果 `COMPOSE_PROFILES` 未设置或 `.env` 文件不存在，会构建所有服务

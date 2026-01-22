@@ -66,13 +66,13 @@
    ```bash
    cd docker
    # 最简单：直接运行（会根据 COMPOSE_PROFILES 自动选择构建 CPU 或 GPU Worker）
-   ./build.sh
+   sh build.sh
    
    # 或者手动指定（build.sh 支持参数方式，只构建需要的服务）
    # GPU Worker:
-   ./build.sh --api --worker-gpu
+   sh build.sh --api --worker-gpu
    # CPU Worker:
-   ./build.sh --api --worker-cpu
+   sh build.sh --api --worker-cpu
    ```
 
 4. **启动服务**:
@@ -96,9 +96,9 @@
 完成！API 现在运行在 `http://localhost:8000`。
 
 > 💡 **提示**：
-> - 使用 `COMPOSE_PROFILES` 配置后，`./build.sh` 和 `docker compose up -d` 都会自动识别
-> - `./build.sh` 不带参数时会根据 `COMPOSE_PROFILES` 自动选择构建 CPU 或 GPU Worker
-> - 也可以使用参数明确指定：`./build.sh --api --worker-gpu` 或 `./build.sh --api --worker-cpu`
+> - 使用 `COMPOSE_PROFILES` 配置后，`sh build.sh` 和 `docker compose up -d` 都会自动识别
+> - `sh build.sh` 不带参数时会根据 `COMPOSE_PROFILES` 自动选择构建 CPU 或 GPU Worker
+> - 也可以使用参数明确指定：`sh build.sh --api --worker-gpu` 或 `sh build.sh --api --worker-cpu`
 > - 更多配置选项见 [docker/README.zh.md](docker/README.zh.md)
 
 ## API 使用

@@ -21,7 +21,7 @@ This document lists common issues and solutions.
 
 1. **Use the build script (Recommended)**:
    ```bash
-   cd docker && ./build.sh --worker-gpu
+   cd docker && sh build.sh --worker-gpu
    ```
    The script automatically checks and builds the base image if needed.
 
@@ -38,7 +38,7 @@ This document lists common issues and solutions.
 
 3. **Build all images using the script**:
    ```bash
-   cd docker && ./build.sh
+   cd docker && sh build.sh
    ```
 
 ### Base Image Build Fails

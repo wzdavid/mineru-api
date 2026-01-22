@@ -11,10 +11,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
 
-# Create non-root user for security
-RUN useradd -m -u 1000 mineru && \
-    mkdir -p /app /tmp/mineru_temp /tmp/mineru_output && \
-    chown -R mineru:mineru /app /tmp/mineru_temp /tmp/mineru_output
+# Create directories
+RUN mkdir -p /app /tmp/mineru_temp /tmp/mineru_output
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1
@@ -26,12 +24,6 @@ RUN pip install --no-cache-dir -r /app/cleanup/requirements.txt -i ${PIP_INDEX_U
 
 COPY shared /app/shared
 COPY cleanup /app/cleanup
-
-# Change ownership
-RUN chown -R mineru:mineru /app
-
-# Switch to non-root user
-USER mineru
 
 # Cleanup service does not need to expose ports
 # But keep health check (optional)

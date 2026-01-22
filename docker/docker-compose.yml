@@ -134,7 +134,6 @@ services:
       - mineru-network
 
   mineru-cleanup:
-    profiles: ["mineru-cleanup"]
     image: mineru-cleanup:latest
     build:
       context: ..

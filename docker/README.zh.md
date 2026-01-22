@@ -18,42 +18,86 @@
 
 ## 使用方法
 
-### 快速开始
+### 最简单的方式（推荐）
 
-1. **在 `docker/.env` 中配置**：
+**首次使用**：
+
+1. **复制配置文件**：
    ```bash
    cd docker
    cp .env.example .env
-   # 编辑 .env 并设置 COMPOSE_PROFILES（例如：mineru-cpu 或 mineru-gpu）
    ```
 
-2. **启动所有服务**：
+2. **构建镜像**:
    ```bash
-   cd docker && docker compose up -d
+   cd docker
+   # 最简单：直接运行（会根据 COMPOSE_PROFILES 自动选择构建 CPU 或 GPU Worker）
+   ./build.sh
+   
+   # 或者手动指定（build.sh 支持参数方式）
+   # GPU Worker:
+   ./build.sh --api --worker-gpu
+   # CPU Worker:
+   ./build.sh --api --worker-cpu
    ```
 
-   Docker Compose 会自动从 `docker/.env` 读取 `COMPOSE_PROFILES` 并启动相应的服务。
+3. **配置并启动服务**：
+   ```bash
+   cd docker
+   # 编辑 docker/.env，设置 COMPOSE_PROFILES
+   # 方式 1: GPU Worker + 内部 Redis（默认值，需要 NVIDIA GPU）
+   COMPOSE_PROFILES=redis,mineru-gpu
+   
+   # 方式 2: CPU Worker + 内部 Redis（推荐开发环境）
+   # COMPOSE_PROFILES=redis,mineru-cpu
+   
+   # 然后一键启动所有服务（API 会自动启动，无需指定）
+   docker compose up -d
+   ```
 
-### Worker 选择
+4. **验证服务**：
+   ```bash
+   curl http://localhost:8000/api/v1/health
+   ```
 
-在 `docker/.env` 中配置 Worker 类型：
+完成！服务已启动。
+
+> 💡 **说明**：
+> - `mineru-api` 和 `mineru-cleanup` 服务没有 profile，会**自动启动**（必需服务）
+> - 通过 `COMPOSE_PROFILES` 控制启动 Redis 和 Worker
+> - 使用 `docker compose up -d` 一键启动所有配置的服务
+> - 无需手动指定每个服务，更简单！
+
+### 服务配置说明
+
+**推荐方式：使用 `COMPOSE_PROFILES` 环境变量**（在 `docker/.env` 中配置）：
 
 ```bash
-# 使用 CPU Worker（推荐用于开发环境）
+# 在 docker/.env 中设置（选择一种）
+COMPOSE_PROFILES=redis,mineru-gpu      # GPU Worker + 内部 Redis（默认值）
+COMPOSE_PROFILES=redis,mineru-cpu      # CPU Worker + 内部 Redis
+
+# 使用外部 Redis（不包含 redis profile）
+COMPOSE_PROFILES=mineru-gpu
 COMPOSE_PROFILES=mineru-cpu
 
-# 使用 GPU Worker（需要 NVIDIA GPU）
-COMPOSE_PROFILES=mineru-gpu
-
-# 组合多个 profiles（例如：包含内部 Redis）
-COMPOSE_PROFILES=redis,mineru-cpu
+# 然后一键启动
+cd docker && docker compose up -d
 ```
 
-### 手动选择 Profile
+**说明**：
+- `mineru-api` 服务**没有 profile，会自动启动**（必需服务）
+- `mineru-cleanup` 服务**没有 profile，会自动启动**（自动清理服务）
+- `redis` 服务需要 `redis` profile
+- `mineru-worker-cpu` 需要 `mineru-cpu` profile
+- `mineru-worker-gpu` 需要 `mineru-gpu` profile
 
-您也可以手动指定 profiles：
+**手动指定 Profile**（命令行方式，不推荐）：
 
 ```bash
+# 启动 GPU Worker 和内部 Redis（默认方式）
+cd docker && docker compose --profile redis --profile mineru-gpu up -d
+
 # 启动 CPU Worker 和内部 Redis
 cd docker && docker compose --profile redis --profile mineru-cpu up -d
 
@@ -122,7 +166,7 @@ docker network ls | grep mineru
 # 仅启动 API + Redis：
 docker compose --profile redis up -d redis mineru-api
 
-# 启动 API + Redis + GPU Worker：
+# 启动 API + Redis + GPU Worker（默认）：
 docker compose --profile redis --profile mineru-gpu up -d redis mineru-api mineru-worker-gpu
 
 # 启动 API + Redis + CPU Worker：
@@ -150,8 +194,10 @@ docker compose logs redis
 
 **方法 1：在 `docker/.env` 中使用 COMPOSE_PROFILES**：
 ```bash
-# 在 docker/.env 中
-COMPOSE_PROFILES=redis,mineru-cpu
+# 在 docker/.env 中（默认值）
+COMPOSE_PROFILES=redis,mineru-gpu
+# 或使用 CPU Worker
+# COMPOSE_PROFILES=redis,mineru-cpu
 ```
 
 然后启动服务：
@@ -187,7 +233,9 @@ REDIS_URL=redis://redis:6379/0
 2. **在 `docker/.env` 中配置（不包含 redis profile）**：
    ```bash
    # 只包含 worker profile，不包含 redis
-   COMPOSE_PROFILES=mineru-cpu
+   COMPOSE_PROFILES=mineru-gpu
+   # 或使用 CPU Worker
+   # COMPOSE_PROFILES=mineru-cpu
    ```
 
 3. **启动服务**：
@@ -225,53 +273,53 @@ REDIS_URL=redis://username:password@host.docker.internal:6379/0
 
 ## 构建镜像
 
-### 重要：构建顺序
+### 使用构建脚本（推荐，最简单）
 
-`mineru-worker-gpu` 服务依赖于基础镜像 `mineru-vllm:latest`，必须先构建该基础镜像。
-
-**方法 1：使用构建脚本（推荐）**
-
-构建脚本会自动检查并在需要时构建基础镜像：
+构建脚本会自动处理所有依赖关系，包括基础镜像，并支持根据 `COMPOSE_PROFILES` 自动选择：
 
 ```bash
-# 构建所有镜像（自动先构建基础镜像）
-cd docker && ./build.sh
+cd docker
 
-# 构建特定服务
-cd docker && ./build.sh --api
-cd docker && ./build.sh --worker-gpu
-cd docker && ./build.sh --worker-cpu
-cd docker && ./build.sh --cleanup
+# ===== 最简单：根据 COMPOSE_PROFILES 自动选择 =====
+# 如果 docker/.env 中配置了 COMPOSE_PROFILES，会自动选择构建对应的 Worker
+./build.sh
 
-# 构建多个服务
-cd docker && ./build.sh --api --worker-gpu
+# ===== 手动指定（build.sh 仍支持参数方式）=====
+# GPU Worker:
+./build.sh --api --worker-gpu
+# CPU Worker:
+./build.sh --api --worker-cpu
+
+# ===== 其他选项 =====
+./build.sh --all              # 构建所有镜像（忽略 COMPOSE_PROFILES）
+./build.sh --api              # 仅构建 API
+./build.sh --worker-cpu       # 仅构建 CPU Worker
+./build.sh --worker-gpu       # 仅构建 GPU Worker（会自动先构建基础镜像）
+./build.sh --cleanup          # 仅构建清理服务
 ```
 
-**方法 2：手动构建**
+> 💡 **提示**：
+> - 不带参数运行 `./build.sh` 时，会自动读取 `docker/.env` 中的 `COMPOSE_PROFILES`，选择构建对应的 Worker
+> - 构建脚本会自动检查并构建 GPU Worker 所需的基础镜像 `mineru-vllm:latest`，无需手动处理
+> - CPU 和 GPU Worker 是互斥的，选择一种即可
+> - 如果 `COMPOSE_PROFILES` 未设置或 `.env` 文件不存在，会构建所有服务
 
-如果您喜欢手动构建：
+### 手动构建（高级用户）
+
+如果您需要手动控制构建过程：
 
 ```bash
-# 1. 首先，构建基础镜像
 cd docker
+
+# 1. 构建 GPU Worker 需要先构建基础镜像
 docker build -f Dockerfile.base \
     --build-arg PIP_INDEX_URL=${PIP_INDEX_URL:-https://pypi.org/simple} \
     -t mineru-vllm:latest ..
 
-# 2. 然后构建其他镜像
-cd docker && docker compose build
-
-# 或构建特定服务
-cd docker && docker compose build mineru-api
-cd docker && docker compose build mineru-worker-gpu  # 需要 mineru-vllm:latest
-cd docker && docker compose build mineru-worker-cpu
-```
-
-**方法 3：使用 docker compose（如果基础镜像不存在会失败）**
-
-```bash
-# 如果 mineru-vllm:latest 不存在，此命令会失败
-cd docker && docker compose build mineru-worker-gpu
+# 2. 构建其他镜像
+docker compose build mineru-api
+docker compose build mineru-worker-gpu  # 需要 mineru-vllm:latest
+docker compose build mineru-worker-cpu
 ```
 
 ## 环境变量

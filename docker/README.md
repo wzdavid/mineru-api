@@ -18,42 +18,86 @@ This directory contains all Docker-related configuration files.
 
 ## Usage
 
-### Quick Start
+### Simplest Way (Recommended)
 
-1. **Configure in `docker/.env`**:
+**First time use**:
+
+1. **Copy configuration files**:
    ```bash
    cd docker
    cp .env.example .env
-   # Edit .env and set COMPOSE_PROFILES (e.g., mineru-cpu or mineru-gpu)
    ```
 
-2. **Start all services**:
+2. **Build images**:
    ```bash
-   cd docker && docker compose up -d
+   cd docker
+   # Simplest: run directly (automatically selects CPU or GPU Worker based on COMPOSE_PROFILES)
+   ./build.sh
+   
+   # Or manually specify (build.sh supports parameters)
+   # GPU Worker:
+   ./build.sh --api --worker-gpu
+   # CPU Worker:
+   ./build.sh --api --worker-cpu
    ```
 
-   Docker Compose will automatically read `COMPOSE_PROFILES` from `docker/.env` and start the appropriate services.
+3. **Configure and start services**:
+   ```bash
+   cd docker
+   # Edit docker/.env, set COMPOSE_PROFILES
+   # Option 1: GPU Worker + internal Redis (default, requires NVIDIA GPU)
+   COMPOSE_PROFILES=redis,mineru-gpu
+   
+   # Option 2: CPU Worker + internal Redis (recommended for development)
+   # COMPOSE_PROFILES=redis,mineru-cpu
+   
+   # Then start all services with one command (API starts automatically)
+   docker compose up -d
+   ```
 
-### Worker Selection
+4. **Verify services**:
+   ```bash
+   curl http://localhost:8000/api/v1/health
+   ```
 
-Configure worker type in `docker/.env`:
+Done! Services are now running.
+
+> 💡 **Notes**:
+> - `mineru-api` and `mineru-cleanup` services **start automatically** (no profile, required services)
+> - Control which services start via `COMPOSE_PROFILES` (Redis and Worker)
+> - Use `docker compose up -d` to start all configured services with one command
+> - No need to manually specify each service, simpler!
+
+### Service Configuration
+
+**Recommended: Use `COMPOSE_PROFILES` environment variable** (configure in `docker/.env`):
 
 ```bash
-# Use CPU Worker (recommended for development)
+# Set in docker/.env (choose one)
+COMPOSE_PROFILES=redis,mineru-gpu      # GPU Worker + internal Redis (default)
+COMPOSE_PROFILES=redis,mineru-cpu      # CPU Worker + internal Redis
+
+# Using external Redis (without redis profile)
+COMPOSE_PROFILES=mineru-gpu
 COMPOSE_PROFILES=mineru-cpu
 
-# Use GPU Worker (requires NVIDIA GPU)
-COMPOSE_PROFILES=mineru-gpu
-
-# Combine multiple profiles (e.g., with internal Redis)
-COMPOSE_PROFILES=redis,mineru-cpu
+# Then start with one command
+cd docker && docker compose up -d
 ```
 
-### Manual Profile Selection
+**Notes**:
+- `mineru-api` service **starts automatically** (no profile, required service)
+- `mineru-cleanup` service **starts automatically** (no profile, cleanup service)
+- `redis` service requires `redis` profile
+- `mineru-worker-cpu` requires `mineru-cpu` profile
+- `mineru-worker-gpu` requires `mineru-gpu` profile
 
-You can also manually specify profiles:
+**Manual Profile Selection** (command line, not recommended):
 
 ```bash
+# Start with GPU Worker and internal Redis (default)
+cd docker && docker compose --profile redis --profile mineru-gpu up -d
+
 # Start with CPU Worker and internal Redis
 cd docker && docker compose --profile redis --profile mineru-cpu up -d
 
@@ -122,7 +166,7 @@ docker network ls | grep mineru
 # For API + Redis only:
 docker compose --profile redis up -d redis mineru-api
 
-# For API + Redis + GPU Worker:
+# For API + Redis + GPU Worker (default):
 docker compose --profile redis --profile mineru-gpu up -d redis mineru-api mineru-worker-gpu
 
 # For API + Redis + CPU Worker:
@@ -150,8 +194,10 @@ For more troubleshooting information, see [TROUBLESHOOTING.md](../docs/TROUBLESH
 
 **Method 1: Using COMPOSE_PROFILES in `docker/.env`**:
 ```bash
-# In docker/.env
-COMPOSE_PROFILES=redis,mineru-cpu
+# In docker/.env (default)
+COMPOSE_PROFILES=redis,mineru-gpu
+# Or use CPU Worker
+# COMPOSE_PROFILES=redis,mineru-cpu
 ```
 
 Then start services:
@@ -187,7 +233,9 @@ If you have Redis running on your host machine or another container:
 2. **Configure in `docker/.env` (don't include redis profile)**:
    ```bash
    # Only include worker profile, not redis
-   COMPOSE_PROFILES=mineru-cpu
+   COMPOSE_PROFILES=mineru-gpu
+   # Or use CPU Worker
+   # COMPOSE_PROFILES=mineru-cpu
    ```
 
 3. **Start services**:
@@ -225,53 +273,53 @@ REDIS_URL=redis://username:password@host.docker.internal:6379/0
 
 ## Building Images
 
-### Important: Build Order
+### Using Build Script (Recommended, Simplest)
 
-The `mineru-worker-gpu` service depends on the base image `mineru-vllm:latest`, which must be built first.
-
-**Option 1: Use the build script (Recommended)**
-
-The build script automatically checks and builds the base image if needed:
+The build script automatically handles all dependencies, including base images, and supports auto-selection based on `COMPOSE_PROFILES`:
 
 ```bash
-# Build all images (automatically builds base image first)
-cd docker && ./build.sh
+cd docker
 
-# Build specific services
-cd docker && ./build.sh --api
-cd docker && ./build.sh --worker-gpu
-cd docker && ./build.sh --worker-cpu
-cd docker && ./build.sh --cleanup
+# ===== Simplest: Auto-select based on COMPOSE_PROFILES =====
+# If COMPOSE_PROFILES is configured in docker/.env, automatically selects the corresponding Worker
+./build.sh
 
-# Build multiple services
-cd docker && ./build.sh --api --worker-gpu
+# ===== Manual specification (build.sh still supports parameters) =====
+# GPU Worker:
+./build.sh --api --worker-gpu
+# CPU Worker:
+./build.sh --api --worker-cpu
+
+# ===== Other Options =====
+./build.sh --all              # Build all images (ignores COMPOSE_PROFILES)
+./build.sh --api              # Build API only
+./build.sh --worker-cpu       # Build CPU Worker only
+./build.sh --worker-gpu       # Build GPU Worker only (auto-builds base image first)
+./build.sh --cleanup         # Build cleanup service only
 ```
 
-**Option 2: Manual build**
+> 💡 **Tips**:
+> - Running `./build.sh` without parameters automatically reads `COMPOSE_PROFILES` from `docker/.env` and selects the corresponding Worker
+> - The build script automatically checks and builds the base image `mineru-vllm:latest` required for GPU Worker, no manual handling needed
+> - CPU and GPU Workers are mutually exclusive, choose one
+> - If `COMPOSE_PROFILES` is not set or `.env` file doesn't exist, builds all services
 
-If you prefer to build manually:
+### Manual Build (Advanced Users)
+
+If you need manual control over the build process:
 
 ```bash
-# 1. First, build the base image
 cd docker
+
+# 1. GPU Worker requires base image first
 docker build -f Dockerfile.base \
     --build-arg PIP_INDEX_URL=${PIP_INDEX_URL:-https://pypi.org/simple} \
     -t mineru-vllm:latest ..
 
-# 2. Then build other images
-cd docker && docker compose build
-
-# Or build specific services
-cd docker && docker compose build mineru-api
-cd docker && docker compose build mineru-worker-gpu  # Requires mineru-vllm:latest
-cd docker && docker compose build mineru-worker-cpu
-```
-
-**Option 3: Using docker compose (will fail if base image missing)**
-
-```bash
-# This will fail if mineru-vllm:latest doesn't exist
-cd docker && docker compose build mineru-worker-gpu
+# 2. Build other images
+docker compose build mineru-api
+docker compose build mineru-worker-gpu  # Requires mineru-vllm:latest
+docker compose build mineru-worker-cpu
 ```
 
 ## Environment Variables

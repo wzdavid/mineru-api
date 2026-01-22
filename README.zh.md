@@ -34,33 +34,72 @@
 - Docker 和 Docker Compose
 - （可选）NVIDIA GPU（用于 GPU Worker）
 
-### 启动服务
+### 最简单的方式（推荐）
 
-1. **复制环境配置文件**:
+**4 步启动服务**：
+
+1. **复制配置文件**:
    ```bash
+   # 项目根目录
    cp .env.example .env
+   cd docker && cp .env.example .env
    ```
 
-2. **启动 Redis 和 API**:
+2. **配置服务选择**（在 `docker/.env` 中）:
    ```bash
-   cd docker && docker compose up -d redis mineru-api
+   cd docker
+   # 编辑 .env 文件，设置 COMPOSE_PROFILES（选择一种）
+   
+   # 方式 1: GPU Worker + 内部 Redis（默认值，需要 NVIDIA GPU）
+   COMPOSE_PROFILES=redis,mineru-gpu
+   
+   # 方式 2: CPU Worker + 内部 Redis（推荐开发环境）
+   # COMPOSE_PROFILES=redis,mineru-cpu
    ```
+   
+   > 💡 **说明**：
+   > - 默认值：`COMPOSE_PROFILES=redis,mineru-gpu`（GPU Worker）
+   > - 通过 `COMPOSE_PROFILES` 控制启动 Redis 和 Worker
+   > - API 和 Cleanup 服务会自动启动（没有 profile，必需服务）
 
-3. **启动 Worker**（选择 CPU 或 GPU）:
+3. **构建镜像**:
    ```bash
-   # CPU Worker（推荐开发环境）
-   cd docker && docker compose --profile mineru-cpu up -d
-
-   # GPU Worker（需要 NVIDIA GPU）
-   cd docker && docker compose --profile mineru-gpu up -d
+   cd docker
+   # 最简单：直接运行（会根据 COMPOSE_PROFILES 自动选择构建 CPU 或 GPU Worker）
+   ./build.sh
+   
+   # 或者手动指定（build.sh 支持参数方式，只构建需要的服务）
+   # GPU Worker:
+   ./build.sh --api --worker-gpu
+   # CPU Worker:
+   ./build.sh --api --worker-cpu
    ```
 
-4. **验证服务**:
+4. **启动服务**:
+   ```bash
+   cd docker
+   # 最简单：直接启动（会根据 COMPOSE_PROFILES 自动启动配置的服务）
+   docker compose up -d
+   
+   # 或者手动指定（等价方式）
+   # GPU Worker:
+   docker compose --profile redis --profile mineru-gpu up -d
+   # CPU Worker:
+   docker compose --profile redis --profile mineru-cpu up -d
+   ```
+
+5. **验证服务**:
    ```bash
    curl http://localhost:8000/api/v1/health
    ```
 
 完成！API 现在运行在 `http://localhost:8000`。
+
+> 💡 **提示**：
+> - 使用 `COMPOSE_PROFILES` 配置后，`./build.sh` 和 `docker compose up -d` 都会自动识别
+> - `./build.sh` 不带参数时会根据 `COMPOSE_PROFILES` 自动选择构建 CPU 或 GPU Worker
+> - 也可以使用参数明确指定：`./build.sh --api --worker-gpu` 或 `./build.sh --api --worker-cpu`
+> - 更多配置选项见 [docker/README.zh.md](docker/README.zh.md)
 
 ## API 使用
 

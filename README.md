@@ -34,33 +34,72 @@ Enterprise-grade document parsing service with asynchronous queue processing bas
 - Docker and Docker Compose
 - (Optional) NVIDIA GPU for GPU worker
 
-### Start Services
+### Simplest Way (Recommended)
 
-1. **Copy environment configuration**:
+**4 steps to start**:
+
+1. **Copy configuration files**:
    ```bash
+   # Project root
    cp .env.example .env
+   cd docker && cp .env.example .env
    ```
 
-2. **Start Redis and API**:
+2. **Configure service selection** (in `docker/.env`):
    ```bash
-   cd docker && docker compose up -d redis mineru-api
+   cd docker
+   # Edit .env file, set COMPOSE_PROFILES (choose one)
+   
+   # Option 1: GPU Worker + internal Redis (default, requires NVIDIA GPU)
+   COMPOSE_PROFILES=redis,mineru-gpu
+   
+   # Option 2: CPU Worker + internal Redis (recommended for development)
+   # COMPOSE_PROFILES=redis,mineru-cpu
    ```
+   
+   > 💡 **Notes**:
+   > - Default: `COMPOSE_PROFILES=redis,mineru-gpu` (GPU Worker)
+   > - Control which services start via `COMPOSE_PROFILES` (Redis and Worker)
+   > - API and Cleanup services start automatically (no profile, required services)
 
-3. **Start Worker** (choose CPU or GPU):
+3. **Build images**:
    ```bash
-   # CPU Worker (recommended for development)
-   cd docker && docker compose --profile mineru-cpu up -d
-
-   # GPU Worker (requires NVIDIA GPU)
-   cd docker && docker compose --profile mineru-gpu up -d
+   cd docker
+   # Simplest: run directly (automatically selects CPU or GPU Worker based on COMPOSE_PROFILES)
+   ./build.sh
+   
+   # Or manually specify (build.sh supports parameters to build only needed services)
+   # GPU Worker:
+   ./build.sh --api --worker-gpu
+   # CPU Worker:
+   ./build.sh --api --worker-cpu
    ```
 
-4. **Verify services**:
+4. **Start services**:
+   ```bash
+   cd docker
+   # Simplest: start directly (automatically starts configured services based on COMPOSE_PROFILES)
+   docker compose up -d
+   
+   # Or manually specify (equivalent ways)
+   # GPU Worker:
+   docker compose --profile redis --profile mineru-gpu up -d
+   # CPU Worker:
+   docker compose --profile redis --profile mineru-cpu up -d
+   ```
+
+5. **Verify services**:
    ```bash
    curl http://localhost:8000/api/v1/health
    ```
 
 That's it! The API is now running at `http://localhost:8000`.
+
+> 💡 **Tips**:
+> - After configuring `COMPOSE_PROFILES`, both `./build.sh` and `docker compose up -d` will automatically recognize it
+> - `./build.sh` without parameters automatically selects CPU or GPU Worker based on `COMPOSE_PROFILES`
+> - You can also use parameters to explicitly specify: `./build.sh --api --worker-gpu` or `./build.sh --api --worker-cpu`
+> - See [docker/README.md](docker/README.md) for more configuration options
 
 ## API Usage
 

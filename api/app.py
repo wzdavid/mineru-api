@@ -135,8 +135,9 @@ async def submit_task(
     formula_enable: bool = Form(True, description="Enable formula recognition"),
     table_enable: bool = Form(True, description="Enable table recognition"),
     priority: int = Form(0, description="Priority, higher number means higher priority"),
+    enable_pagination: Optional[bool] = Form(None, description="Enable pagination for large PDFs (auto-detect if None)"),
 ):
-    """Submit MinerU parsing task."""
+    """Submit MinerU parsing task with automatic pagination for large PDFs."""
     try:
         storage = get_storage()
         
@@ -164,9 +165,11 @@ async def submit_task(
         
         # Save to storage (temporary file)
         temp_file_path = storage.save_temp_file(file_key, file_data.getvalue())
-
+        
+        # Submit task - worker will automatically determine if splitting is needed
+        # Pass enable_pagination in options so worker can respect user's explicit choice
         task_result = celery_app.send_task(
-            'mineru.parse_document',
+            'mineru.parse_document',  # Unified task - worker handles all logic (splitting, parsing, merging)
             args=[
                 temp_file_path,  # Storage path (S3 key or local path)
                 file.filename,
@@ -176,8 +179,9 @@ async def submit_task(
                     'method': method,
                     'formula_enable': formula_enable,
                     'table_enable': table_enable,
+                    'enable_pagination': enable_pagination,  # Pass user's choice to worker
                 },
-                False,
+                False,  # upload_images
             ],
             queue=celeryconfig.MINERU_QUEUE,
             exchange=celeryconfig.MINERU_EXCHANGE,
@@ -196,7 +200,7 @@ async def submit_task(
             'file_name': file.filename,
             'created_at': datetime.now().isoformat(),
             'backend': backend,
-            'priority': priority
+            'priority': priority,
         }
 
     except Exception as exc:
@@ -226,8 +230,10 @@ async def parse_pdf(
     """
     Parse PDF/image files using MinerU (compatible with official MinerU API format).
     This endpoint submits tasks to worker and waits for completion.
+    Worker handles all splitting and merging logic - API layer just submits and collects results.
     """
     try:
+
         # Create unique output directory
         unique_dir = os.path.join(output_dir, str(datetime.now().strftime('%Y%m%d_%H%M%S_%f')))
         os.makedirs(unique_dir, exist_ok=True)
@@ -257,7 +263,7 @@ async def parse_pdf(
             if len(actual_lang_list) != len(pdf_file_names):
                 actual_lang_list = [actual_lang_list[0] if actual_lang_list else "ch"] * len(pdf_file_names)
 
-            # Submit task to worker
+            # Submit task to worker (unified task - worker handles splitting automatically)
             task_result = celery_app.send_task(
                 'mineru.parse_document',
                 args=[
@@ -279,6 +285,7 @@ async def parse_pdf(
             task_results.append(task_result)
 
         # Wait for all tasks to complete
+        # Note: Worker layer handles all splitting and merging, so results are already merged
         completed_results = {}
         for i, (pdf_name, task_result) in enumerate(zip(pdf_file_names, task_results)):
             try:
@@ -338,6 +345,11 @@ async def parse_pdf(
                             if content_list_path and os.path.exists(content_list_path):
                                 with open(content_list_path, 'r', encoding='utf-8') as f:
                                     file_result['content_list'] = f.read()
+                    if 'content_list' in result and 'content_list' not in file_result:
+                        try:
+                            file_result['content_list'] = json.dumps(result['content_list'], ensure_ascii=False)
+                        except Exception:
+                            pass
                     else:
                         # Try to read from file system
                         if backend.startswith("pipeline"):
@@ -370,7 +382,8 @@ async def parse_pdf(
                                     images_dict[os.path.basename(image_path)] = f"data:image/jpeg;base64,{encode_image(image_path)}"
                                 if images_dict:
                                     file_result['images'] = images_dict
-
+                
+                # Worker already handles merging, so just add result directly
                 completed_results[pdf_name] = file_result
 
             except Exception as e:
@@ -379,12 +392,19 @@ async def parse_pdf(
                     'error': f"Failed to process file: {str(e)}"
                 }
 
+        # Build result entries (worker already handles merging, so no need to check for chunks)
+        result_entries = []
+        for pdf_name, task_result in zip(pdf_file_names, task_results):
+            if pdf_name in completed_results:
+                result_entries.append({"name": pdf_name, "task_id": task_result.id})
+
         # Determine return type based on response_format_zip
         if response_format_zip:
             zip_fd, zip_path = tempfile.mkstemp(suffix=".zip", prefix="mineru_results_")
             os.close(zip_fd)
             with zipfile.ZipFile(zip_path, "w", compression=zipfile.ZIP_DEFLATED) as zf:
-                for pdf_name in pdf_file_names:
+                for entry in result_entries:
+                    pdf_name = entry["name"]
                     if pdf_name not in completed_results:
                         continue
                     
@@ -395,8 +415,7 @@ async def parse_pdf(
                         continue
 
                     # Find corresponding task result to get output directory
-                    task_idx = pdf_file_names.index(pdf_name)
-                    task_id = task_results[task_idx].id
+                    task_id = entry["task_id"]
                     output_path = Path(celeryconfig.OUTPUT_DIR) / task_id
 
                     # Write text-type results
@@ -478,7 +497,8 @@ async def parse_pdf(
         else:
             # Build JSON result
             result_dict = {}
-            for pdf_name in pdf_file_names:
+            for entry in result_entries:
+                pdf_name = entry["name"]
                 if pdf_name in completed_results:
                     result_dict[pdf_name] = completed_results[pdf_name]
 
@@ -553,7 +573,11 @@ async def get_task_status(task_id: str, upload_images: bool = Query(False, descr
                 response['markdown_content'] = task_result['data'].get('content')
                 response['images'] = task_result['data'].get('images', [])
 
-            if 'json_files' in task_result:
+            # Priority 1: Use content_list directly from task_result (for merged results)
+            if 'content_list' in task_result:
+                response['content_list'] = task_result['content_list']
+            elif 'json_files' in task_result:
+                # Priority 2: Try to load from file path (for backward compatibility)
                 response['json_files'] = task_result['json_files']
 
                 def _safe_load_json(path_str: Optional[str]) -> Optional[Dict[str, Any]]:

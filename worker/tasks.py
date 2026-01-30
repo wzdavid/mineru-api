@@ -8,7 +8,7 @@ import sys
 import json
 import gc
 from pathlib import Path
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, List
 import uuid
 from datetime import datetime
 import traceback
@@ -63,6 +63,16 @@ try:
 except ImportError:
     MINERU_AVAILABLE = False
 
+# PyPDFium2 for PDF page detection
+try:
+    import pypdfium2
+    PYPDFIUM2_AVAILABLE = True
+except ImportError:
+    PYPDFIUM2_AVAILABLE = False
+
+# Note: Using pypdfium2 for both page detection and PDF splitting
+# (MinerU already uses pypdfium2, so we reuse it to reduce dependencies)
+
 # MarkItDown imports
 try:
     from markitdown import MarkItDown
@@ -82,6 +92,9 @@ logger = get_task_logger(__name__)
 # Configuration constants
 OUTPUT_DIR = Path(celeryconfig.OUTPUT_DIR)
 OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+
+# Pagination configuration is read directly from environment variables when needed
+# No need to pre-load constants as they may change between tasks
 
 # Supported file formats
 PDF_IMAGE_FORMATS = {'.pdf', '.png', '.jpg', '.jpeg', '.bmp', '.tiff', '.tif', '.webp'}
@@ -135,6 +148,136 @@ def get_file_type(file_path: str) -> str:
         return 'pdf_image'
     else:
         return 'markitdown'
+
+
+def get_pdf_page_count(file_path: Path) -> int:
+    """
+    Get the total number of pages in a PDF file
+    
+    Args:
+        file_path: Path to PDF file
+        
+    Returns:
+        Total number of pages, or 0 if unable to determine
+    """
+    if not PYPDFIUM2_AVAILABLE:
+        logger.warning("pypdfium2 not available, cannot detect PDF page count")
+        return 0
+    
+    try:
+        with pypdfium2_lock:
+            pdf = pypdfium2.PdfDocument(file_path)
+            page_count = len(pdf)
+            pdf.close()
+            return page_count
+    except Exception as e:
+        logger.error(f"Failed to get PDF page count for {file_path}: {e}")
+        return 0
+
+
+def split_pdf_file(
+    pdf_path: Path, 
+    output_dir: Path, 
+    chunk_size: int = 500, 
+    parent_task_id: str = None
+) -> List[Dict[str, Any]]:
+    """
+    Split PDF file into multiple chunks using pypdfium2
+    
+    Args:
+        pdf_path: Path to PDF file
+        output_dir: Output directory for chunk files
+        chunk_size: Number of pages per chunk
+        parent_task_id: Parent task ID (for generating filenames)
+        
+    Returns:
+        List of chunk info dicts, each containing:
+        - path: Chunk file path (storage path)
+        - start_page: Start page number (1-based)
+        - end_page: End page number (1-based)
+        - page_count: Number of pages in chunk
+    """
+    if not PYPDFIUM2_AVAILABLE:
+        raise RuntimeError("pypdfium2 is required for PDF splitting. Install with: pip install pypdfium2")
+    
+    try:
+        chunks = []
+        output_dir.mkdir(parents=True, exist_ok=True)
+        storage = get_storage()
+        
+        # Open PDF and get page count (within lock for thread safety)
+        with pypdfium2_lock:
+            pdf = pypdfium2.PdfDocument(pdf_path)
+            total_pages = len(pdf)
+        
+        logger.info(f"✂️  Splitting PDF: {pdf_path.name} ({total_pages} pages)")
+        logger.info(f"   Chunk size: {chunk_size} pages")
+        logger.info("   Using pypdfium2 for PDF splitting")
+        
+        import tempfile
+        import io
+        
+        for i in range(0, total_pages, chunk_size):
+            end_page = min(i + chunk_size, total_pages)
+            chunk_page_count = end_page - i
+            
+            # Generate chunk filename
+            if parent_task_id:
+                chunk_filename = f"{parent_task_id}_chunk_{i+1}_{end_page}.pdf"
+            else:
+                chunk_filename = f"{pdf_path.stem}_chunk_{i+1}_{end_page}.pdf"
+            
+            # Create chunk PDF and save to bytes (within lock for thread safety)
+            with pypdfium2_lock:
+                chunk_pdf = pypdfium2.PdfDocument.new()
+                page_indices = list(range(i, end_page))
+                chunk_pdf.import_pages(pdf, pages=page_indices)
+                
+                # Save to bytes buffer
+                pdf_buffer = io.BytesIO()
+                chunk_pdf.save(pdf_buffer)
+                pdf_bytes = pdf_buffer.getvalue()
+                pdf_buffer.close()
+                chunk_pdf.close()
+            
+            # File I/O operations outside lock (no pypdfium2 operations)
+            with tempfile.NamedTemporaryFile(delete=False, suffix='.pdf') as tmp_chunk:
+                tmp_chunk.write(pdf_bytes)
+                chunk_local_path = Path(tmp_chunk.name)
+            
+            # Upload chunk to storage
+            chunk_storage_key = f"splits/{parent_task_id}/{chunk_filename}" if parent_task_id else f"splits/{chunk_filename}"
+            chunk_storage_path = storage.save_temp_file(chunk_storage_key, chunk_local_path.read_bytes())
+            
+            # Clean up local temporary file
+            try:
+                chunk_local_path.unlink()
+            except Exception as e:
+                logger.warning(f"Failed to cleanup temp chunk file: {e}")
+            
+            chunk_info = {
+                "path": chunk_storage_path,  # Storage path
+                "start_page": i + 1,  # 1-based
+                "end_page": end_page,  # 1-based
+                "page_count": chunk_page_count,
+            }
+            chunks.append(chunk_info)
+            
+            logger.info(f"   ✅ Created chunk {len(chunks)}: pages {i+1}-{end_page} ({chunk_page_count} pages)")
+        
+        # Close PDF (within lock for thread safety)
+        with pypdfium2_lock:
+            pdf.close()
+        
+        logger.info(f"✅ Split into {len(chunks)} chunks")
+        return chunks
+        
+    except ImportError:
+        logger.error("❌ pypdfium2 not installed. Install with: pip install pypdfium2")
+        raise RuntimeError("pypdfium2 is required for PDF splitting")
+    except Exception as e:
+        logger.error(f"❌ Failed to split PDF: {e}")
+        raise
 
 
 def process_markdown_images_base64(md_content: str, image_dir: Path) -> str:
@@ -265,9 +408,9 @@ def process_markdown_images(md_content: str, image_dir: Path, upload_images: boo
 @celery_app.task(
     name='mineru.parse_document',
     bind=True,
-    max_retries=0,  # Disable automatic retry
-    soft_time_limit=6000,     # 100 minutes
-    time_limit=7200,          # 2 hours
+    max_retries=0,
+    soft_time_limit=6000,
+    time_limit=7200,
     track_started=True
 )
 def parse_document_task(
@@ -279,22 +422,468 @@ def parse_document_task(
     upload_images: bool = False,
 ) -> Dict[str, Any]:
     """
-    MinerU document parsing task
+    MinerU document parsing task with automatic splitting for large PDFs
     
-    Args:
-        file_path: File path
-        file_name: File name
-        backend: Parsing backend ('pipeline' or 'markitdown')
-        options: Parsing options
-        upload_images: Whether to upload images to MinIO
-        
-    Returns:
-        Parsing result dictionary
+    This task handles the complete flow:
+    1. Check if PDF needs splitting (based on page count and configuration)
+    2. If yes: split -> parse chunks -> merge
+    3. If no: parse directly
+    
+    All logic is handled in worker layer - API layer just submits this task.
     """
     if options is None:
         options = {}
     
-    # Explicitly output only content_list JSON
+    task_id = self.request.id
+    storage = get_storage()
+    
+    # Download file to check if splitting is needed
+    local_file = storage.download_to_local(file_path)
+    local_input_path = Path(local_file)
+    
+    try:
+        if not local_input_path.exists():
+            import time
+            wait_seconds = float(os.getenv('MINERU_WAIT_FOR_INPUT_SECONDS', '5'))
+            deadline = time.time() + wait_seconds
+            while not local_input_path.exists() and time.time() < deadline:
+                time.sleep(0.2)
+            if not local_input_path.exists():
+                return {
+                    'status': 'failed',
+                    'file_name': file_name,
+                    'backend': backend,
+                    'error_message': f'Input file not found: {local_input_path}',
+                    'traceback': '',
+                    'completed_at': datetime.now().isoformat()
+                }
+
+        # Check if pagination is explicitly disabled by user
+        user_disable_pagination = options.get('enable_pagination') is False
+        
+        # Check global pagination setting
+        pagination_enabled = os.getenv('MINERU_ENABLE_PAGINATION', 'true').lower() == 'true'
+        
+        # Determine if splitting is needed
+        use_pagination = False
+        total_pages = 0
+        
+        # Only check if pagination is not explicitly disabled and globally enabled
+        if not user_disable_pagination and pagination_enabled:
+            if PYPDFIUM2_AVAILABLE and file_name.lower().endswith('.pdf'):
+                total_pages = get_pdf_page_count(local_input_path)
+                pagination_threshold = int(os.getenv('MINERU_PAGINATION_THRESHOLD', 100))
+                
+                if total_pages > pagination_threshold:
+                    use_pagination = True
+                    logger.info(f"🔀 Large PDF detected ({total_pages} pages), will split and parse in chunks")
+        
+        if use_pagination:
+            # Split and parse in chunks
+            return _handle_split_and_parse(
+                self,
+                local_input_path,
+                file_path,
+                file_name,
+                backend,
+                options,
+                upload_images,
+                task_id
+            )
+        else:
+            # Parse directly (no splitting needed)
+            # Update task state
+            self.update_state(
+                state=states.STARTED,
+                meta={
+                    'status': 'processing',
+                    'file_name': file_name,
+                    'backend': backend,
+                    'started_at': datetime.now().isoformat()
+                }
+            )
+            
+            # Execute parsing logic
+            return _execute_parse_document(
+                file_path=file_path,
+                file_name=file_name,
+                task_id=task_id,
+                backend=backend,
+                options=options,
+                upload_images=upload_images
+            )
+    finally:
+        # Clean up local file
+        try:
+            if local_input_path.exists() and str(local_input_path) != file_path:
+                local_input_path.unlink()
+        except Exception as e:
+            logger.warning(f"Failed to cleanup local temp file: {e}")
+
+
+def _handle_split_and_parse(
+    self,
+    local_input_path: Path,
+    storage_file_path: str,
+    file_name: str,
+    backend: str,
+    options: Dict[str, Any],
+    upload_images: bool,
+    parent_task_id: str
+) -> Dict[str, Any]:
+    """Handle splitting, parsing chunks, and merging results"""
+    storage = get_storage()
+    chunk_size = int(os.getenv('MINERU_PAGE_CHUNK_SIZE', 50))
+    
+    # Create splits directory
+    import tempfile
+    splits_dir = Path(tempfile.gettempdir()) / "mineru_splits" / parent_task_id
+    splits_dir.mkdir(parents=True, exist_ok=True)
+    
+    # Split PDF
+    chunks = split_pdf_file(
+        pdf_path=local_input_path,
+        output_dir=splits_dir,
+        chunk_size=chunk_size,
+        parent_task_id=parent_task_id
+    )
+    logger.info(f"✂️  PDF split into {len(chunks)} chunks")
+
+    if storage.storage_type == 'local':
+        self.update_state(
+            state=states.STARTED,
+            meta={
+                'status': 'splitting_and_parsing',
+                'file_name': file_name,
+                'backend': backend,
+                'chunk_count': len(chunks),
+                'started_at': datetime.now().isoformat()
+            }
+        )
+
+        chunk_results: List[Dict[str, Any]] = []
+        failed_chunks: List[Dict[str, Any]] = []
+
+        for chunk in chunks:
+            chunk_file_path = chunk['path']
+            chunk_start_page = chunk.get('start_page', 1)
+            chunk_end_page = chunk.get('end_page', 1)
+
+            chunk_options = options.copy()
+            chunk_options['chunk_info'] = {
+                'start_page': chunk_start_page,
+                'end_page': chunk_end_page,
+                'page_count': chunk.get('page_count', chunk_end_page - chunk_start_page + 1),
+            }
+
+            chunk_task_id = f"{parent_task_id}_{chunk_start_page}_{chunk_end_page}_{uuid.uuid4().hex[:8]}"
+            chunk_result = _execute_parse_document(
+                file_path=chunk_file_path,
+                file_name=f"{Path(file_name).stem}_pages_{chunk_start_page}-{chunk_end_page}.pdf",
+                task_id=chunk_task_id,
+                backend=backend,
+                options=chunk_options,
+                upload_images=upload_images,
+            )
+
+            if chunk_result.get('status') == 'failed':
+                failed_chunks.append({
+                    'file_name': chunk_result.get('file_name'),
+                    'start_page': chunk_start_page,
+                    'end_page': chunk_end_page,
+                    'error': chunk_result.get('error_message', 'Unknown error'),
+                })
+                continue
+
+            chunk_result['start_page'] = chunk_start_page
+            chunk_result['end_page'] = chunk_end_page
+            chunk_results.append(chunk_result)
+
+        try:
+            storage.delete_file(storage_file_path)
+        except Exception as e:
+            logger.warning(f"Failed to cleanup storage temp file {storage_file_path}: {e}")
+
+        if not chunk_results:
+            first_error = failed_chunks[0]['error'] if failed_chunks else 'Unknown'
+            return {
+                'status': 'failed',
+                'file_name': file_name,
+                'backend': backend,
+                'error_message': f"All {len(chunks)} chunks failed. First error: {first_error}",
+                'completed_at': datetime.now().isoformat()
+            }
+
+        return _merge_chunk_results_from_results(
+            chunk_results=chunk_results,
+            file_name=file_name,
+            backend=backend,
+            task_id=parent_task_id,
+        )
+    
+    # Submit parse tasks for each chunk
+    chunk_task_ids = []
+    for chunk in chunks:
+        chunk_file_path = chunk['path']  # Storage path
+        chunk_start_page = chunk.get('start_page', 1)
+        chunk_end_page = chunk.get('end_page', 1)
+        
+        chunk_options = options.copy()
+        chunk_options['chunk_info'] = {
+            'start_page': chunk_start_page,
+            'end_page': chunk_end_page,
+            'page_count': chunk.get('page_count', chunk_end_page - chunk_start_page + 1),
+        }
+        
+        chunk_task = celery_app.send_task(
+            'mineru.parse_document',
+            args=[
+                chunk_file_path,
+                f"{Path(file_name).stem}_pages_{chunk_start_page}-{chunk_end_page}.pdf",
+                backend,
+                chunk_options,
+                upload_images,
+            ],
+            queue=celeryconfig.MINERU_QUEUE,
+            exchange=celeryconfig.MINERU_EXCHANGE,
+            routing_key=celeryconfig.MINERU_ROUTING_KEY,
+        )
+        chunk_task_ids.append(chunk_task.id)
+    
+    # Submit merge task and return its ID
+    # The merge task will handle waiting for all chunks and merging results
+    merge_task = celery_app.send_task(
+        'mineru.merge_chunk_results',
+        args=[chunk_task_ids, file_name, backend],
+        queue=celeryconfig.MINERU_QUEUE,
+        exchange=celeryconfig.MINERU_EXCHANGE,
+        routing_key=celeryconfig.MINERU_ROUTING_KEY,
+    )
+    
+    # Update parent task state to indicate it's waiting for merge
+    self.update_state(
+        state=states.STARTED,
+        meta={
+            'status': 'splitting_and_parsing',
+            'file_name': file_name,
+            'backend': backend,
+            'chunk_count': len(chunks),
+            'merge_task_id': merge_task.id,
+            'started_at': datetime.now().isoformat()
+        }
+    )
+    
+    # Wait for merge task to complete and return its result
+    from celery.result import AsyncResult
+    result = AsyncResult(merge_task.id, app=celery_app)
+    
+    # Poll for completion
+    import time
+    timeout = 7200  # 2 hours
+    start_time = time.time()
+    while not result.ready() and (time.time() - start_time) < timeout:
+        time.sleep(1)
+    
+    if not result.ready():
+        raise Exception(f"Merge task timed out after {timeout} seconds")
+    
+    if result.successful():
+        try:
+            storage.delete_file(storage_file_path)
+        except Exception as e:
+            logger.warning(f"Failed to cleanup storage temp file {storage_file_path}: {e}")
+        return result.result
+    else:
+        raise Exception(f"Merge task failed: {result.result}")
+
+
+def _merge_chunk_results_from_results(
+    chunk_results: List[Dict[str, Any]],
+    file_name: str,
+    backend: str,
+    task_id: str,
+) -> Dict[str, Any]:
+    chunk_results.sort(key=lambda x: x.get('start_page', 1))
+
+    merged_md_parts = []
+    merged_images = []
+    merged_content_list = []
+    total_images = 0
+    content_list_format = None
+    content_list_meta = None
+
+    for idx, chunk_result in enumerate(chunk_results):
+        chunk_data = chunk_result.get('data', {})
+        chunk_md = chunk_data.get('content') or ''
+        chunk_start_page = chunk_result.get('start_page', 1)
+        chunk_end_page = chunk_result.get('end_page', 1)
+
+        logger.info(f"📦 Merging chunk {idx+1}/{len(chunk_results)}: pages {chunk_start_page}-{chunk_end_page}, content_length={len(chunk_md)}, has_content_list={chunk_result.get('content_list') is not None}, has_images={len(chunk_data.get('images', []))}")
+
+        merged_md_parts.append(chunk_md)
+
+        chunk_images = chunk_data.get('images', [])
+        merged_images.extend(chunk_images)
+        total_images += len(chunk_images)
+
+        chunk_content_list = chunk_result.get('content_list')
+        if chunk_content_list:
+            if content_list_format is None:
+                if isinstance(chunk_content_list, dict):
+                    if 'pages' in chunk_content_list:
+                        content_list_format = 'pages'
+                        content_list_meta = {k: v for k, v in chunk_content_list.items() if k != 'pages'}
+                    elif 'items' in chunk_content_list:
+                        content_list_format = 'items'
+                        content_list_meta = {k: v for k, v in chunk_content_list.items() if k != 'items'}
+                    else:
+                        content_list_format = 'list'
+                else:
+                    content_list_format = 'list'
+
+            page_offset = chunk_start_page - 1
+
+            if isinstance(chunk_content_list, list):
+                for item in chunk_content_list:
+                    if isinstance(item, dict):
+                        merged_item = item.copy()
+                        if 'page_idx' in merged_item:
+                            merged_item['page_idx'] += page_offset
+                        if 'page_number' in merged_item:
+                            merged_item['page_number'] += page_offset
+                        if 'page' in merged_item:
+                            merged_item['page'] += page_offset
+                        if 'page_index' in merged_item:
+                            merged_item['page_index'] += page_offset
+                        if 'page_num' in merged_item:
+                            merged_item['page_num'] += page_offset
+                    else:
+                        merged_item = item
+                    merged_content_list.append(merged_item)
+            elif isinstance(chunk_content_list, dict):
+                if 'pages' in chunk_content_list:
+                    for page in chunk_content_list['pages']:
+                        if isinstance(page, dict):
+                            merged_page = page.copy()
+                            if 'page_idx' in merged_page:
+                                merged_page['page_idx'] += page_offset
+                            if 'page_number' in merged_page:
+                                merged_page['page_number'] += page_offset
+                            if 'page' in merged_page:
+                                merged_page['page'] += page_offset
+                            merged_content_list.append(merged_page)
+                        else:
+                            merged_content_list.append(page)
+                elif 'items' in chunk_content_list:
+                    for item in chunk_content_list['items']:
+                        if isinstance(item, dict):
+                            merged_item = item.copy()
+                            if 'page_idx' in merged_item:
+                                merged_item['page_idx'] += page_offset
+                            if 'page_number' in merged_item:
+                                merged_item['page_number'] += page_offset
+                            if 'page' in merged_item:
+                                merged_item['page'] += page_offset
+                            merged_content_list.append(merged_item)
+                        else:
+                            merged_content_list.append(item)
+                else:
+                    logger.warning(f"Unexpected content_list structure in chunk pages {chunk_start_page}-{chunk_end_page}: {type(chunk_content_list)}")
+        else:
+            logger.warning(f"⚠️ Chunk pages {chunk_start_page}-{chunk_end_page} has no content_list")
+
+    merged_md = ''.join(merged_md_parts)
+    has_base64_images = 'data:image' in merged_md
+
+    logger.info(f"✅ Merged {len(chunk_results)} chunks successfully")
+    logger.info(f"📊 Merge statistics: total_content_length={len(merged_md)}, total_images={total_images}, total_content_list_items={len(merged_content_list)}")
+
+    parse_method = chunk_results[0].get('parse_method', 'MinerU') if chunk_results else 'MinerU'
+
+    storage = get_storage()
+    import tempfile
+
+    with tempfile.TemporaryDirectory() as temp_output_dir:
+        output_path = Path(temp_output_dir) / task_id
+        output_path.mkdir(parents=True, exist_ok=True)
+
+        md_output = output_path / "result.md"
+        md_output.write_text(merged_md, encoding='utf-8')
+
+        output_key_prefix = f"{task_id}/"
+        for file_path_obj in output_path.rglob('*'):
+            if file_path_obj.is_file():
+                relative_path = file_path_obj.relative_to(output_path)
+                storage_key = f"{output_key_prefix}{relative_path}"
+                storage.save_output_file(storage_key, file_path_obj.read_bytes())
+
+        if merged_images:
+            merged_images.sort(key=lambda img: img.get('filename', '') if isinstance(img, dict) else '')
+
+        if merged_content_list:
+            if content_list_format == 'pages':
+                final_content_list = {**(content_list_meta or {}), 'pages': merged_content_list}
+            elif content_list_format == 'items':
+                final_content_list = {**(content_list_meta or {}), 'items': merged_content_list}
+            else:
+                final_content_list = merged_content_list
+        else:
+            final_content_list = None
+
+        images_uploaded = chunk_results[0].get('data', {}).get('images_uploaded', False) if chunk_results else False
+
+        result = {
+            'status': 'completed',
+            'file_name': file_name,
+            'backend': backend,
+            'parse_method': parse_method,
+            'completed_at': datetime.now().isoformat(),
+            'data': {
+                'content': merged_md,
+                'images_uploaded': images_uploaded,
+                'images_as_base64': has_base64_images,
+                'has_images': total_images > 0,
+                'images': merged_images
+            }
+        }
+
+        if final_content_list is not None:
+            base_name = Path(file_name).stem
+            content_list_json = output_path / f"{base_name}/auto/{base_name}_content_list.json"
+            content_list_json.parent.mkdir(parents=True, exist_ok=True)
+            content_list_json.write_text(json.dumps(final_content_list, indent=2, ensure_ascii=False), encoding='utf-8')
+
+            content_list_storage_key = f"{output_key_prefix}{base_name}/auto/{base_name}_content_list.json"
+            storage.save_output_file(content_list_storage_key, content_list_json.read_bytes())
+
+            result['json_files'] = {
+                'content_list_json': content_list_storage_key
+            }
+            result['content_list'] = final_content_list
+
+    final_content_length = len(result.get('data', {}).get('content', ''))
+    final_content_list_count = len(result.get('content_list', [])) if result.get('content_list') is not None else 0
+    logger.info(f"✅ Merge completed: content_length={final_content_length}, content_list_items={final_content_list_count}, has_json_files={'json_files' in result}")
+
+    return result
+
+
+
+def _execute_parse_document(
+    file_path: str,
+    file_name: str,
+    task_id: str,
+    backend: str,
+    options: Dict[str, Any],
+    upload_images: bool,
+) -> Dict[str, Any]:
+    """
+    Execute document parsing (core parsing logic)
+    
+    This function contains the core parsing logic used by parse_document_task
+    """
+    # Prepare options
+    options = options.copy() if options else {}
     options.update({
         'f_dump_content_list': True
     })
@@ -303,19 +892,7 @@ def parse_document_task(
     options.setdefault('method', os.getenv('MINERU_PARSE_METHOD', 'auto'))
     options.setdefault('lang', os.getenv('MINERU_LANG', 'ch'))
     
-    task_id = self.request.id
     logger.info(f"Starting MinerU document parsing task: {file_name}")
-    
-    # Update task status to processing
-    self.update_state(
-        state=states.STARTED,
-        meta={
-            'status': 'processing',
-            'file_name': file_name,
-            'backend': backend,
-            'started_at': datetime.now().isoformat()
-        }
-    )
     
     try:
         storage = get_storage()
@@ -343,7 +920,7 @@ def parse_document_task(
                         task_id=task_id,
                         backend=backend,
                         options=options,
-                        output_path=output_path
+                        output_path=output_path,
                     )
                     parse_method = 'MinerU'
                 else:
@@ -447,6 +1024,26 @@ def parse_document_task(
             except Exception as e:
                 logger.warning(f"Failed to cleanup storage temp file {file_path}: {e}")
         
+        # Load content_list from JSON file if it exists (for chunk tasks to merge)
+        content_list_data = None
+        if json_files and 'content_list_json' in json_files:
+            try:
+                content_list_path = json_files['content_list_json']
+                # If it's a storage path, download it first
+                if not Path(content_list_path).exists():
+                    # Try to load from storage
+                    storage = get_storage()
+                    if hasattr(storage, 'download_to_local'):
+                        local_path = storage.download_to_local(content_list_path)
+                        content_list_path = local_path
+                
+                if Path(content_list_path).exists():
+                    with open(content_list_path, 'r', encoding='utf-8') as f:
+                        content_list_data = json.load(f)
+                        logger.debug(f"✅ Loaded content_list from {content_list_path}: {len(content_list_data) if isinstance(content_list_data, list) else 'dict'} items")
+            except Exception as e:
+                logger.warning(f"⚠️ Failed to load content_list from JSON file: {e}")
+        
         # Return result
         result = {
             'status': 'completed',
@@ -466,6 +1063,10 @@ def parse_document_task(
         # If JSON files exist, add them to result
         if json_files:
             result['json_files'] = json_files
+        
+        # Add content_list directly to result (for merge task to use)
+        if content_list_data is not None:
+            result['content_list'] = content_list_data
         
         logger.info(f"✅ Task {task_id} completed successfully")
         return result
@@ -496,18 +1097,31 @@ def _parse_with_mineru(
     task_id: str,
     backend: str,
     options: dict,
-    output_path: Path
+    output_path: Path,
 ) -> dict:
-    """Parse PDF and image formats using MinerU"""
+    """
+    Parse PDF and image formats using MinerU
+    
+    Args:
+        file_path: Path to PDF file (already split if it's a chunk)
+        file_name: Original file name
+        task_id: Task ID
+        backend: MinerU backend
+        options: Parsing options
+        output_path: Output directory
+    """
     if not MINERU_AVAILABLE:
         raise RuntimeError("MinerU is not available. Please install it.")
     
     logger.info(f"📄 Using MinerU to parse: {file_name}")
     logger.debug(f"MinerU options: {options}")
 
+    pdf_bytes = None
+    
     try:
-        # Read file
-        pdf_bytes = read_fn(file_path)
+        # Read full file (file_path is already a split chunk if pagination is used)
+        # Convert Path to string for read_fn compatibility
+        pdf_bytes = read_fn(str(file_path))
         
         # Enable only content_list output
         f_dump_content_list = True
@@ -524,9 +1138,9 @@ def _parse_with_mineru(
                 parse_method=options.get('method', 'auto'),
                 formula_enable=options.get('formula_enable', True),
                 table_enable=options.get('table_enable', True), 
-            # JSON output options
-            f_dump_content_list=f_dump_content_list,
-        )
+                # JSON output options
+                f_dump_content_list=f_dump_content_list,
+            )
         
         return {'parser': 'MinerU', 'success': True}
         
@@ -537,7 +1151,8 @@ def _parse_with_mineru(
         except Exception as e:
             logger.debug(f"Memory cleanup failed for task {task_id}: {e}")
         try:
-            del pdf_bytes
+            if pdf_bytes:
+                del pdf_bytes
         except Exception:
             pass
         try:
@@ -635,28 +1250,58 @@ def get_task_result(task_id: str, upload_images: bool = False) -> Dict[str, Any]
             
             # If Markdown content exists, add it to response
             if 'data' in task_result and 'content' in task_result['data']:
-                response['markdown_content'] = task_result['data']['content']
+                content = task_result['data']['content']
+                content_length = len(content) if content else 0
+                logger.info(f"📤 Returning markdown content to API: length={content_length} chars")
+                response['markdown_content'] = content
                 response['images'] = task_result['data'].get('images', [])
+                logger.info(f"📤 Returning {len(response.get('images', []))} images to API")
             
             # If JSON file paths exist, add them to response and try to embed JSON content
             if 'json_files' in task_result:
                 response['json_files'] = task_result['json_files']
 
-                # Safely read JSON file content and embed in response for direct use by upstream
-                def _safe_load_json(path_str: Optional[str]) -> Optional[Dict[str, Any]]:
-                    try:
-                        if not path_str:
+                # First, check if content_list is directly in task_result (for merged results)
+                # This is the most reliable way as it doesn't require file I/O
+                content_list = task_result.get('content_list')
+                
+                # If not directly available, try to read from file path
+                if content_list is None:
+                    def _safe_load_json(path_str: Optional[str]) -> Optional[Dict[str, Any]]:
+                        try:
+                            if not path_str:
+                                return None
+                            # Check if it's a local file path that exists
+                            p = Path(path_str)
+                            if p.exists() and p.is_absolute():
+                                # Local file path
+                                with open(p, 'r', encoding='utf-8') as f:
+                                    return json.load(f)
+                            else:
+                                # Storage path - read from storage
+                                try:
+                                    storage = get_storage()
+                                    # For output files, construct full path
+                                    # path_str is like "task_id/base_name/auto/base_name_content_list.json"
+                                    # We need to prepend OUTPUT_DIR for local storage or bucket for S3
+                                    from shared.storage import OUTPUT_DIR, S3_BUCKET_OUTPUT, STORAGE_TYPE
+                                    if STORAGE_TYPE == 's3':
+                                        full_path = f"{S3_BUCKET_OUTPUT}/{path_str}"
+                                    else:
+                                        full_path = str(Path(OUTPUT_DIR) / path_str)
+                                    
+                                    json_bytes = storage.read_file(full_path)
+                                    if json_bytes:
+                                        return json.loads(json_bytes.decode('utf-8'))
+                                except Exception as e:
+                                    logger.debug(f"Failed to load JSON from storage path {path_str}: {e}")
+                                    return None
+                        except Exception as e:
+                            logger.debug(f"Failed to load JSON from {path_str}: {e}")
                             return None
-                        p = Path(path_str)
-                        if not p.exists():
-                            return None
-                        with open(p, 'r', encoding='utf-8') as f:
-                            return json.load(f)
-                    except Exception:
-                        return None
 
-                content_list_path = task_result['json_files'].get('content_list_json')
-                content_list = _safe_load_json(content_list_path)
+                    content_list_path = task_result['json_files'].get('content_list_json')
+                    content_list = _safe_load_json(content_list_path)
 
                 # Only add to response body if successfully read
                 if content_list is not None:
@@ -829,6 +1474,164 @@ def list_tasks(status_filter: str = None, limit: int = 100):
             'count': 0,
             'timestamp': datetime.now().isoformat()
         }
+
+@celery_app.task(
+    name='mineru.merge_chunk_results',
+    bind=True,
+    track_started=True
+)
+def merge_chunk_results_task(
+    self,
+    chunk_task_ids: List[str],
+    file_name: str,
+    backend: str = 'pipeline',
+) -> Dict[str, Any]:
+    """
+    Merge results from multiple chunk parsing tasks
+    
+    Args:
+        chunk_task_ids: List of chunk task IDs to merge
+        file_name: Original file name
+        backend: Parsing backend
+        
+    Returns:
+        Merged parsing result dictionary
+    """
+    task_id = self.request.id
+    logger.info(f"Starting merge task for {len(chunk_task_ids)} chunks: {file_name}")
+    
+    self.update_state(
+        state=states.STARTED,
+        meta={
+            'status': 'merging',
+            'file_name': file_name,
+            'backend': backend,
+            'chunk_count': len(chunk_task_ids),
+            'started_at': datetime.now().isoformat()
+        }
+    )
+    
+    try:
+        from celery.result import AsyncResult
+        
+        # Wait for all chunk tasks to complete
+        chunk_results = []
+        failed_chunks = []
+        
+        import time
+        for chunk_task_id in chunk_task_ids:
+            result = AsyncResult(chunk_task_id, app=celery_app)
+            
+            # Poll for result completion (avoiding result.get() which causes deadlock)
+            # Use ready() check with timeout
+            timeout = 3600  # 1 hour timeout per chunk
+            start_time = time.time()
+            while not result.ready() and (time.time() - start_time) < timeout:
+                time.sleep(0.5)  # Poll every 0.5 seconds
+            
+            if not result.ready():
+                failed_chunks.append({
+                    'task_id': chunk_task_id,
+                    'error': f'Task timeout after {timeout} seconds'
+                })
+                logger.error(f"Chunk task {chunk_task_id} timed out")
+                continue
+            
+            # Task is ready, check result
+            try:
+                if result.successful():
+                    chunk_result = result.result
+                    if chunk_result.get('status') == 'failed':
+                        failed_chunks.append({
+                            'task_id': chunk_task_id,
+                            'error': chunk_result.get('error_message', 'Unknown error')
+                        })
+                        logger.error(f"Chunk task {chunk_task_id} failed: {chunk_result.get('error_message')}")
+                    else:
+                        # Verify chunk result has required fields
+                        chunk_data = chunk_result.get('data', {})
+                        chunk_content = chunk_data.get('content', '')
+                        
+                        # Get page range from task metadata (chunk_info in options)
+                        chunk_start = -1
+                        chunk_end = -1
+                        
+                        # Try to get from task metadata
+                        task_info = result.info if hasattr(result, 'info') else {}
+                        if isinstance(task_info, dict):
+                            # Check if chunk_info is in options
+                            task_kwargs = task_info.get('kwargs', {})
+                            options = task_kwargs.get('options', {})
+                            chunk_info = options.get('chunk_info', {})
+                            if chunk_info:
+                                chunk_start = chunk_info.get('start_page', 1)
+                                chunk_end = chunk_info.get('end_page', 1)
+                                # Update chunk_result with page info for consistency
+                                chunk_result['start_page'] = chunk_start
+                                chunk_result['end_page'] = chunk_end
+                        
+                        # If still not found, try to get from result (backward compatibility)
+                        if chunk_start == -1 or chunk_end == -1:
+                            chunk_start = chunk_result.get('start_page', 1)
+                            chunk_end = chunk_result.get('end_page', 1)
+                        
+                        # Verify content is not None and not empty
+                        if chunk_content is None:
+                            logger.error(f"❌ CRITICAL: Chunk {chunk_task_id} (pages {chunk_start}-{chunk_end}) has None content!")
+                        elif not chunk_content:
+                            logger.warning(f"⚠️ Chunk {chunk_task_id} (pages {chunk_start}-{chunk_end}) has empty content")
+                        else:
+                            # Log content preview for verification
+                            if len(chunk_content) > 200:
+                                preview = chunk_content[:100] + "..." + chunk_content[-100:]
+                            else:
+                                preview = chunk_content
+                            logger.debug(f"📄 Chunk {chunk_task_id} content preview: '{preview}'")
+                        
+                        logger.info(f"✅ Chunk {chunk_task_id} (pages {chunk_start}-{chunk_end}): content_length={len(chunk_content) if chunk_content else 0}, has_content_list={chunk_result.get('content_list') is not None}, has_images={len(chunk_data.get('images', []))}")
+                        chunk_results.append(chunk_result)
+                elif result.failed():
+                    error_msg = str(result.result) if result.result else 'Unknown error'
+                    failed_chunks.append({
+                        'task_id': chunk_task_id,
+                        'error': error_msg
+                    })
+                    logger.error(f"Chunk task {chunk_task_id} failed: {error_msg}")
+                else:
+                    # Task is in an unexpected state
+                    failed_chunks.append({
+                        'task_id': chunk_task_id,
+                        'error': f'Task in state: {result.state}'
+                    })
+                    logger.error(f"Chunk task {chunk_task_id} in unexpected state: {result.state}")
+            except Exception as e:
+                failed_chunks.append({
+                    'task_id': chunk_task_id,
+                    'error': str(e)
+                })
+                logger.error(f"Failed to process result for chunk task {chunk_task_id}: {e}")
+        
+        if not chunk_results:
+            raise Exception(f"All {len(chunk_task_ids)} chunks failed. First error: {failed_chunks[0]['error'] if failed_chunks else 'Unknown'}")
+
+        return _merge_chunk_results_from_results(
+            chunk_results=chunk_results,
+            file_name=file_name,
+            backend=backend,
+            task_id=task_id,
+        )
+        
+    except Exception as e:
+        logger.exception(f"❌ Merge task {task_id} failed")
+        return {
+            'status': 'failed',
+            'file_name': file_name,
+            'backend': backend,
+            'error_message': str(e),
+            'traceback': traceback.format_exc(),
+            'completed_at': datetime.now().isoformat()
+        }
+
 
 if __name__ == "__main__":
     print("🚀 Starting MinerU Celery Worker...")

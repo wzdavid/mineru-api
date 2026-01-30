@@ -191,8 +191,20 @@ MAX_FILE_SIZE=104857600  # 100MB
 
 ## 开发
 
+### 设置开发环境
+
+详细的开发环境设置说明，请查看 [docs/DEVELOPMENT.zh.md](docs/DEVELOPMENT.zh.md)。
+
+**快速开始：**
 ```bash
-# 安装依赖
+# 使用自动化设置脚本（推荐）
+chmod +x setup_venv.sh
+./setup_venv.sh
+
+# 或手动设置：
+python3 -m venv .venv
+source .venv/bin/activate  # Windows: .venv\Scripts\activate
+pip install --upgrade pip setuptools wheel
 pip install -r api/requirements.txt
 pip install -r worker/requirements.txt
 pip install -r cleanup/requirements.txt

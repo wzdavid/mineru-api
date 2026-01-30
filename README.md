@@ -191,8 +191,20 @@ MAX_FILE_SIZE=104857600  # 100MB
 
 ## Development
 
+### Setting Up Development Environment
+
+For detailed development environment setup instructions, see [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md).
+
+**Quick Start:**
 ```bash
-# Install dependencies
+# Use the automated setup script (recommended)
+chmod +x setup_venv.sh
+./setup_venv.sh
+
+# Or manually:
+python3 -m venv .venv
+source .venv/bin/activate  # On Windows: .venv\Scripts\activate
+pip install --upgrade pip setuptools wheel
 pip install -r api/requirements.txt
 pip install -r worker/requirements.txt
 pip install -r cleanup/requirements.txt

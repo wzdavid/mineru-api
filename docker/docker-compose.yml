@@ -3,7 +3,7 @@ services:
   # To use external Redis, set REDIS_URL in .env file and don't use redis profile
   redis:
     profiles: ["redis"]
-    image: redis:7-alpine
+    image: redis:latest
     container_name: mineru-redis
     restart: always
     ports:

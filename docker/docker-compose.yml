@@ -1,3 +1,5 @@
+name: mineru
+
 services:
   # Redis service (optional, use profile to enable)
   # To use external Redis, set REDIS_URL in .env file and don't use redis profile

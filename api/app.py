@@ -573,32 +573,53 @@ async def get_task_status(task_id: str, upload_images: bool = Query(False, descr
                 response['markdown_content'] = task_result['data'].get('content')
                 response['images'] = task_result['data'].get('images', [])
 
-            # Priority 1: Use content_list directly from task_result (for merged results)
+            # Priority 1: Use content_list/middle_json directly from task_result (for merged results)
             if 'content_list' in task_result:
                 response['content_list'] = task_result['content_list']
-            elif 'json_files' in task_result:
-                # Priority 2: Try to load from file path (for backward compatibility)
-                response['json_files'] = task_result['json_files']
+            if 'middle_json' in task_result:
+                response['middle_json'] = task_result['middle_json']
 
-                def _safe_load_json(path_str: Optional[str]) -> Optional[Dict[str, Any]]:
-                    try:
-                        if not path_str:
-                            return None
-                        path_obj = Path(path_str)
-                        if not path_obj.exists():
-                            return None
-                        with open(path_obj, 'r', encoding='utf-8') as fh:
-                            return json.load(fh)
-                    except Exception:
-                        return None
-
-                content_list_path = None
+            # Priority 2: Load JSON from storage when only json_files keys are present
+            if 'json_files' in task_result and isinstance(task_result['json_files'], dict):
                 json_info = task_result['json_files']
-                if isinstance(json_info, dict):
-                    content_list_path = json_info.get('content_list_json')
-                content_list = _safe_load_json(content_list_path)
-                if content_list is not None:
-                    response['content_list'] = content_list
+
+                def _safe_load_json_from_storage(key: str | None) -> Any | None:
+                    if not key:
+                        return None
+                    try:
+                        storage = get_storage()
+                        # Resolve path: worker stores output_key_prefix + key; storage uses OUTPUT_DIR (local) or bucket (s3)
+                        if storage.storage_type == 'local':
+                            from shared.storage import OUTPUT_DIR
+                            read_path = str(Path(OUTPUT_DIR) / key)
+                        else:
+                            from shared.storage import S3_BUCKET_OUTPUT
+                            read_path = f"{S3_BUCKET_OUTPUT}/{key}"
+                        if storage.file_exists(read_path):
+                            data_bytes = storage.read_file(read_path)
+                            return json.loads(data_bytes.decode('utf-8'))
+                    except Exception as exc:
+                        logger.debug(
+                            "Could not load JSON from storage for task %s key=%s: %s",
+                            task_id,
+                            key,
+                            exc,
+                        )
+                    return None
+
+                # content_list
+                if 'content_list' not in response:
+                    content_list_key = json_info.get('content_list_json')
+                    content_list = _safe_load_json_from_storage(content_list_key)
+                    if content_list is not None:
+                        response['content_list'] = content_list
+
+                # middle_json
+                if 'middle_json' not in response:
+                    middle_json_key = json_info.get('middle_json_json')
+                    middle_json = _safe_load_json_from_storage(middle_json_key)
+                    if middle_json is not None:
+                        response['middle_json'] = middle_json
 
         elif result.failed():
             error_info = result.result if result.result else result.traceback

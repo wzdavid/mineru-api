@@ -4,6 +4,8 @@ This document lists common issues and solutions.
 
 ## Table of Contents
 
+- [GPU container fails to start (NVIDIA driver/library version mismatch)](#gpu-container-fails-to-start-nvidia-driverlibrary-version-mismatch)
+- [RTX 5090 / Blackwell: CUDA error in flash-attention](#rtx-5090--blackwell-cuda-error-in-flash-attention-invalid-argument)
 - [Connection Issues](#connection-issues)
 - [Task Execution Issues](#task-execution-issues)
 - [Performance Issues](#performance-issues)
@@ -63,6 +65,78 @@ This document lists common issues and solutions.
    ```bash
    docker build --no-cache -f docker/Dockerfile.base -t mineru-vllm:latest .
    ```
+
+## GPU container fails to start (NVIDIA driver/library version mismatch)
+
+**Symptoms**: When starting `mineru-worker-gpu` you see:
+```text
+OCI runtime create failed: ... nvidia-container-cli: initialization error: nvml error: driver/library version mismatch
+```
+
+**Cause**: The **NVIDIA kernel driver** on the host does not match the currently loaded driver (or userspace libraries). This often happens when:
+- The NVIDIA driver or kernel was recently updated but the **machine was not rebooted** (old driver still in memory), or
+- Multiple driver/library versions are installed and the version used by nvidia-container-toolkit does not match the loaded kernel driver.
+
+**Steps to fix**:
+
+1. **First try: Reboot the server**  
+   If you recently updated the driver or kernel, a reboot usually restores consistency:
+   ```bash
+   sudo reboot
+   ```
+   After reboot, run:
+   ```bash
+   nvidia-smi
+   ```
+   If `nvidia-smi` works, start the GPU container again.
+
+2. **Verify driver vs library (if you cannot reboot yet)**  
+   ```bash
+   # Currently loaded kernel driver version (should match userspace)
+   cat /proc/driver/nvidia/version
+
+   # Userspace driver version (if nvidia-driver is installed)
+   nvidia-smi
+   ```
+   If `nvidia-smi` already reports `driver/library version mismatch`, the kernel and userspace versions do not match; you **must reboot** or reinstall/switch to a matching driver version.
+
+3. **Optional: Use CPU worker temporarily**  
+   Until the GPU environment is fixed, you can run the CPU worker instead:
+   ```bash
+   docker compose --profile redis --profile mineru-cpu up -d
+   ```
+
+### RTX 5090 / Blackwell: CUDA error in flash-attention (invalid argument)
+
+**Symptoms**: On NVIDIA RTX 5090 (Blackwell, compute capability 12.0), the VLM engine fails with:
+```text
+CUDA error (.../xformers/.../hopper/flash_fwd_launch_template.h:188): invalid argument
+Engine core initialization failed. See root cause above.
+```
+
+**Cause**: The **v0.10.1.1** vLLM base image only supports Ampere, Ada Lovelace, and Hopper (CC 8.0–9.0). Its flash-attention kernels are not built for **Blackwell** (SM 12.0), so the CUDA launch returns "invalid argument". MinerU 2.6.2+ (through 2.7.4) supports Blackwell by using a **vLLM 0.11.0** base image.
+
+**Recommended fix (Docker)**:
+
+1. **Use the v0.11.0 base image**  
+   In `docker/Dockerfile.base`, the default is now `vllm/vllm-openai:v0.11.0`. If you still have an older build using v0.10.1.1, rebuild the base image and GPU worker:
+   ```bash
+   cd docker && sh build.sh --worker-gpu
+   ```
+   Or manually: ensure the `FROM` line in `Dockerfile.base` is `FROM vllm/vllm-openai:v0.11.0` (or the DaoCloud mirror equivalent), then rebuild the base image and `mineru-worker-gpu`.
+
+2. **Alternative: use CPU worker** (no GPU required):
+   ```bash
+   docker compose --profile redis --profile mineru-cpu up -d redis mineru-api mineru-worker-cpu
+   ```
+   PDF parsing runs on CPU (slower but works on any host).
+
+3. **Non-Docker**  
+   Install vLLM ≥0.11.0 (`pip install -U "vllm>=0.11.0"`), or use the **vlm-lmdeploy-engine** backend (supports multiple architectures including Blackwell and Windows).
+
+**Note**: If you use **vlm-http-client** to connect to a remote VLM server, the client machine does not need a compatible GPU; ensure the server runs vLLM ≥0.11.0 (or lmdeploy) for Blackwell.
+
+**References**: [MinerU Docker deployment (v0.11.0 for Blackwell)](https://github.com/opendatalab/MinerU/blob/master/docs/zh/quick_start/docker_deployment.md), [vLLM RTX 5090 discussion](https://discuss.vllm.ai/t/errors-when-running-vllm-deepseek-on-rtx-5090-existing-solutions-not-working/651).
 
 ## Docker Network Issues
 
@@ -163,10 +237,21 @@ This document lists common issues and solutions.
 
 ### Redis Connection Failed
 
-**Symptoms**: API or Worker cannot connect to Redis
+**Symptoms**: API or Worker cannot connect to Redis. You may see:
+- `Error -5 connecting to redis:6379. No address associated with hostname`
+
+**Cause (No address associated with hostname)**: The container is configured to use hostname `redis` (e.g. `REDIS_URL=redis://redis:6379/0`), but that hostname is not resolvable. This usually means the Redis service is **not** running in the same Compose stack—for example you started only `mineru-api` without the `redis` profile, so no container named `redis` exists on the network.
 
 **Solutions**:
-1. Check if Redis service is running:
+1. **Start Redis in the same Compose run** (recommended if using Compose Redis):
+   ```bash
+   cd docker && docker compose --profile redis up -d redis mineru-api
+   ```
+   For GPU worker: `docker compose --profile redis --profile mineru-gpu up -d redis mineru-api mineru-worker-gpu`
+
+2. **Or use an external Redis** and set `REDIS_URL` in `.env` to a reachable address (e.g. `redis://host.docker.internal:6379/0` on Docker Desktop, or your Redis host IP).
+
+3. Check if Redis service is running:
    ```bash
    cd docker && docker compose ps redis
    ```

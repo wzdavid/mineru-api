@@ -1,21 +1,30 @@
 # Base MinerU Dockerfile
 # This creates the foundation layer with MinerU core installation
-# Base MinerU Dockerfile, creates the foundation layer with MinerU core installation, based on MinerU official vllm image
+# Based on MinerU official vllm image; see MinerU docker/china/Dockerfile for reference.
+#
+# vLLM base image version and GPU support (Compute Capability: https://developer.nvidia.com/cuda-gpus):
+#
+# v0.10.1.1  Ampere, Ada Lovelace, Hopper (8.0 <= CC <= 9.0). x86_64 only.
+#            Does NOT support Volta/Turing (CC < 8.0) or Blackwell (RTX 5090, CC >= 10.0).
+#
+# v0.11.0    Volta, Turing (7.0 < CC < 8.0) and Blackwell (CC >= 10.0).
+#            Also supports Ampere/Ada/Hopper (8.0–9.0), so it is a superset of v0.10.1.1.
+#            x86_64 and ARM (AArch64). Use this for one image that works across all supported GPUs.
+#
+# Default: v0.11.0 so that RTX 5090 (Blackwell) and older Volta/Turing GPUs work without switching image.
 
-# Use DaoCloud mirrored vllm image for China region for gpu with Ampere architecture and above (Compute Capability>=8.0)
-# Compute Capability version query (https://developer.nvidia.com/cuda-gpus)
-FROM docker.m.daocloud.io/vllm/vllm-openai:v0.10.1.1
+# Official: FROM vllm/vllm-openai:v0.11.0
+FROM docker.m.daocloud.io/vllm/vllm-openai:v0.11.0
 
 ARG PIP_INDEX_URL=https://pypi.org/simple
 
-# Use the official vllm image
+# MinerU default: v0.10.1.1 (Ampere/Ada/Hopper only; fails on RTX 5090 and on Volta/Turing)
 # FROM vllm/vllm-openai:v0.10.1.1
+# FROM docker.m.daocloud.io/vllm/vllm-openai:v0.10.1.1
 
-# Use DaoCloud mirrored vllm image for China region for gpu with Turing architecture and below (Compute Capability<8.0)
-# FROM docker.m.daocloud.io/vllm/vllm-openai:v0.10.2
-
-# Use the official vllm image
+# Turing / Volta (7.0 < CC < 8.0) or other edge cases: v0.10.2 was sometimes used; v0.11.0 covers these too.
 # FROM vllm/vllm-openai:v0.10.2
+# FROM docker.m.daocloud.io/vllm/vllm-openai:v0.10.2
 
 # Configure Aliyun mirror for Debian (optional, for faster package downloads in China)
 # Note: vllm base image may use Ubuntu, this configuration may not apply
